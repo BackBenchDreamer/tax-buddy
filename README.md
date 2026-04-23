@@ -1,157 +1,276 @@
-# Tax Buddy
+# 🧾 Tax Buddy — AI-Powered Tax Filing Assistant
 
-Hybrid AI workflow for automated tax return filing in India. The project combines document preprocessing, OCR, transformer-assisted entity extraction, cross-document validation, rule-based tax computation, and ITR output generation.
+> OCR · NER · Validation · Tax Engine · Interactive Dashboard
 
-## Architecture
+Tax Buddy is a production-grade, end-to-end pipeline for automated Indian income tax analysis. Upload a Form 16 PDF and get back structured entity extraction, cross-document validation against Form 26AS, tax computation under Old or New regime, and a downloadable ITR-1 JSON — all in under 30 seconds.
 
-```text
-[Upload PDF/Image]
-        |
-        v
-[Preprocess: denoise -> deskew -> binarize]
-        |
-        v
-[OCR Layer]
-   |-> PaddleOCR primary
-   |-> Tesseract fallback
-        |
-        v
-[Text Normalize + Layout Metadata]
-        |
-        v
-[Hybrid Entity Extraction]
-   |-> XLM-R NER model
-   |-> regex + heuristics for PAN/TAN/TDS/deductions
-        |
-        v
-[Cross-Document Validation]
-   |-> PAN/TAN reconciliation
-   |-> Form 16 vs Form 26AS TDS matching
-   |-> income / deduction mismatch detection
-        |
-        v
-[Tax Engine]
-   |-> old regime
-   |-> new regime
-   |-> explainable slab breakdown
-        |
-        v
-[Outputs]
-   |-> ITR JSON
-   |-> ITR XML
-   |-> PDF summary report
-        |
-        v
-[Dashboard UI]
-   |-> upload
-   |-> editable extracted fields
-   |-> validation warnings
-   |-> tax charts
-   |-> downloads
+---
+
+## ✨ Features
+
+| Layer | What it does |
+|-------|-------------|
+| **OCR** | Multi-page PDF extraction via Tesseract (PaddleOCR v3 fallback) |
+| **NER** | Deterministic regex extraction of PAN, TAN, Salary, TDS, AY, Deductions |
+| **Validation** | Rule-based cross-check of Form 16 vs Form 26AS with trust score (0–100) |
+| **Tax Engine** | Indian slab-based calculator — Old & New regime, Section 87A rebate, 4% cess |
+| **ITR Generation** | Structured ITR-1 (Sahaj) JSON output |
+| **Dashboard** | Streamlit fintech-style UI with Plotly charts and editable entity tables |
+
+---
+
+## 🏗️ Architecture
+
+```
+tax-buddy/
+├── backend/                    # FastAPI application
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── router.py       # API router registration
+│   │   │   └── routes.py       # Endpoint controllers
+│   │   ├── core/               # Config & settings
+│   │   ├── schemas/
+│   │   │   └── schemas.py      # Pydantic request/response models
+│   │   ├── services/
+│   │   │   ├── validation_service.py  # Form 16 vs 26AS rule engine
+│   │   │   └── tax_service.py         # Slab-based tax computation
+│   │   └── main.py             # FastAPI app entry point
+│   ├── ml/
+│   │   ├── ocr/
+│   │   │   ├── ocr_service.py  # Multi-page OCR (Tesseract + PaddleOCR)
+│   │   │   └── preprocess.py   # PDF→image, grayscale, denoise, deskew
+│   │   └── ner/
+│   │       ├── ner_service.py  # Regex-primary + transformer-optional NER
+│   │       └── regex_utils.py  # Deterministic field extractors
+│   ├── data/
+│   │   └── uploads/            # Uploaded files (git-ignored)
+│   └── requirements.txt
+│
+└── frontend/                   # Streamlit dashboard
+    ├── app.py                  # Main dashboard (3-column layout)
+    └── requirements.txt
 ```
 
-## Folder Structure
+---
 
-```text
-backend/
-  app/
-    api/
-    core/
-    ml/
-    services/
-    db.py
-    main.py
-    schemas.py
-  tests/
-  pyproject.toml
-frontend/
-  src/
-    components/
-    lib/
-    App.tsx
-    main.tsx
-    index.css
-  package.json
+## ⚡ Quick Start
+
+### Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Python | 3.10–3.13 | [python.org](https://python.org) |
+| Tesseract OCR | 5.x | `brew install tesseract` |
+| Poppler | latest | `brew install poppler` |
+
+> **Note:** PaddleOCR 3.x requires `paddlepaddle` which currently has no ARM64/Python 3.14 wheel. Tesseract is used as the primary engine and works fully.
+
+---
+
+### 1. Clone
+
+```bash
+git clone https://github.com/<your-username>/tax-buddy.git
+cd tax-buddy
 ```
 
-## Key Capabilities
-
-- Document ingestion for PDFs and scanned images.
-- OCR with PaddleOCR first and Tesseract fallback.
-- Hybrid NER: XLM-R token classification plus regex and heuristics.
-- Validation for PAN, TAN, TDS, salary, and deduction mismatches.
-- Tax computation for old and new regimes with step-by-step breakdown.
-- ITR output generation as JSON, XML, and PDF summary.
-- Editable dashboard with confidence-aware fields and charted results.
-
-## Backend API
-
-- `POST /api/upload`
-- `POST /api/extract/{document_id}`
-- `POST /api/validate/{document_id}`
-- `POST /api/compute-tax/{document_id}`
-- `POST /api/generate-itr/{document_id}`
-- `POST /api/pipeline/{document_id}`
-- `GET /api/documents/{document_id}`
-
-## Dataset Format
-
-The NER training pipeline accepts JSONL with token-level labels:
-
-```json
-{"tokens":["PAN","ABCDE1234F"],"ner_tags":[0,0]}
-```
-
-For span-based annotation:
-
-```json
-{
-  "text": "PAN ABCDE1234F",
-  "entities": [
-    {"start": 4, "end": 14, "label": "PAN"}
-  ]
-}
-```
-
-Recommended labels are defined in [backend/app/ml/schema.py](backend/app/ml/schema.py).
-
-## Local Setup
-
-### Backend
+### 2. Backend Setup
 
 ```bash
 cd backend
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
-uvicorn app.main:app --reload --port 8000
+
+pip install -r requirements.txt
+pip install pdf2image python-multipart
 ```
 
-Optional extras:
+Create a `.env` file (optional):
 
 ```bash
-pip install -e .[ocr,ml,dev]
+cp .env.example .env   # edit as needed
 ```
 
-### Frontend
+Start the API server:
+
+```bash
+python -m app.main
+# → http://localhost:8000
+# → Swagger docs: http://localhost:8000/docs
+```
+
+### 3. Frontend Setup
 
 ```bash
 cd frontend
-npm install
-npm run dev
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install streamlit plotly pandas requests
+streamlit run app.py
+# → http://localhost:8501
 ```
 
-Set `VITE_API_BASE_URL=http://localhost:8000/api` if the backend is not on the default URL.
+---
 
-## Deployment Guide
+## 🔌 API Reference
 
-- Backend can run on a container platform or VM with `uvicorn` behind a reverse proxy.
-- Use PostgreSQL in production by setting `DATABASE_URL` in `.env`.
-- Store uploads and generated outputs in object storage for long-term retention.
-- Frontend can be deployed as a static Vite build behind a CDN.
-- OCR/ML models should be packaged as external artifacts or pulled from a model registry.
+Base URL: `http://localhost:8000/api/v1`
 
-## Notes
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/upload` | Upload a PDF or image file |
+| `POST` | `/extract` | Run OCR + NER on an uploaded file |
+| `POST` | `/validate` | Cross-validate Form 16 vs Form 26AS |
+| `POST` | `/compute-tax` | Compute tax (old/new regime) |
+| `POST` | `/generate-itr` | Generate ITR-1 JSON |
+| `POST` | `/process` | **End-to-end pipeline** (recommended) |
+| `GET` | `/system/health` | Health check |
 
-- The implementation is designed to be modular and replaceable; OCR, NER, and tax rules can be swapped independently.
-- The current code base favors robust defaults and graceful degradation when optional ML/OCR packages are not installed.
+### End-to-End Example
+
+```bash
+curl -X POST http://localhost:8000/api/v1/process \
+  -F "file=@form16.pdf"
+```
+
+**Response:**
+```json
+{
+  "file_id": "abc123",
+  "entities": [
+    { "label": "PAN",           "value": "BIGPP1846N", "confidence": 1.0 },
+    { "label": "TAN",           "value": "MUMS15654C", "confidence": 1.0 },
+    { "label": "GrossSalary",   "value": "751585.0",   "confidence": 1.0 },
+    { "label": "TaxableIncome", "value": "604280.0",   "confidence": 1.0 },
+    { "label": "TDS",           "value": "34690.0",    "confidence": 1.0 },
+    { "label": "AssessmentYear","value": "2023-24",    "confidence": 1.0 }
+  ],
+  "validation": {
+    "status": "ok",
+    "score": 100,
+    "issues": []
+  },
+  "tax": {
+    "total_tax": 34690.24,
+    "taxable_income": 604280.0,
+    "tds_paid": 34690.0,
+    "refund_or_payable": -0.24
+  }
+}
+```
+
+---
+
+## 🧠 NER Extraction Logic
+
+The NER service uses a **regex-primary, transformer-optional** architecture:
+
+```
+OCR Text (15,000+ chars from 8 pages)
+        │
+        ▼
+┌─────────────────────────────┐
+│   Regex Layer (PRIMARY)     │  ← Always runs, deterministic
+│   extract_fields(text)      │
+│   PAN · TAN · AY ·          │
+│   GrossSalary · TaxableIncome│
+│   TDS · Section80C          │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│  Transformer Layer (OPTIONAL)│  ← xlm-roberta-base (when available)
+│  Supplements soft fields    │
+│  EmployerName · EmployeeName│
+└─────────────┬───────────────┘
+              │
+              ▼
+     entity_map (flat dict)
+     { "PAN": "...", "TDS": 34690.0, ... }
+```
+
+### Validation Rules
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| PAN Match | HIGH | PAN must match across Form 16 and Form 26AS |
+| TAN Match | HIGH | Employer TAN must be consistent |
+| TDS Reconciliation | HIGH | TDS diff ≤ ₹5 tolerance |
+| Income Sanity | HIGH | TaxableIncome must be ≤ GrossSalary |
+| Assessment Year | MEDIUM | AY must match across documents |
+
+### Tax Slabs (Old Regime — Individual < 60 yrs)
+
+| Income Range | Rate |
+|-------------|------|
+| Up to ₹2,50,000 | 0% |
+| ₹2,50,001 – ₹5,00,000 | 5% |
+| ₹5,00,001 – ₹10,00,000 | 20% |
+| Above ₹10,00,000 | 30% |
+
+Rebate u/s 87A (Old): ₹12,500 if taxable income ≤ ₹5,00,000  
+Cess: 4% on (tax + surcharge)
+
+---
+
+## 🧪 Running Tests
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests/ -v
+```
+
+---
+
+## 🛣️ Roadmap
+
+- [ ] PostgreSQL persistence (SQLAlchemy models ready)
+- [ ] User authentication (JWT)
+- [ ] Fine-tuned XLM-RoBERTa on annotated Form 16 dataset
+- [ ] Form 26AS upload and auto-parse
+- [ ] New Regime tax comparison chart
+- [ ] Docker Compose deployment
+- [ ] Support for ITR-2, ITR-3 forms
+
+---
+
+## 📦 Dependencies
+
+### Backend
+
+| Package | Purpose |
+|---------|---------|
+| `fastapi` + `uvicorn` | API framework |
+| `pydantic` | Schema validation |
+| `pytesseract` | OCR engine |
+| `paddleocr` | OCR engine (v3, optional) |
+| `opencv-python` | Image preprocessing |
+| `pdf2image` | PDF → image conversion |
+| `transformers` + `torch` | NER transformer model |
+| `sqlalchemy` | ORM (future persistence) |
+
+### Frontend
+
+| Package | Purpose |
+|---------|---------|
+| `streamlit` | Dashboard framework |
+| `plotly` | Interactive charts |
+| `pandas` | Data tables |
+| `requests` | API client |
+
+---
+
+## 📄 License
+
+MIT — see [LICENSE](./LICENSE)
+
+---
+
+## 🙏 Acknowledgements
+
+- [Income Tax India](https://incometax.gov.in) — official tax slab reference
+- [TRACES](https://www.tdscpc.gov.in) — Form 16 / 26AS format specification
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) — OCR engine
+- [HuggingFace Transformers](https://huggingface.co/transformers) — XLM-RoBERTa

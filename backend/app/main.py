@@ -1,32 +1,53 @@
-from __future__ import annotations
+"""
+FastAPI application entry point.
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+Mounts the unified API router under the configured prefix and
+adds global exception handling.
+"""
 
-from app.api.routes import router
-from app.core.logging import configure_logging
-from app.db import init_db
-from app.core.config import get_settings
+import logging
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-configure_logging()
-settings = get_settings()
+from app.core.config import settings
+from app.api.router import api_router
 
-app = FastAPI(title=settings.app_name, version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s | %(name)s | %(message)s",
 )
-app.include_router(router)
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    description="AI-powered Indian income tax filing system — OCR → NER → Validation → Tax Engine",
+    version="1.0.0",
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    docs_url=f"{settings.API_V1_STR}/docs",
+    redoc_url=f"{settings.API_V1_STR}/redoc",
+)
+
+# Include API router
+app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
+# ---------------------------------------------------------------------------
+# Global exception handler
+# ---------------------------------------------------------------------------
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logging.getLogger("app").exception("Unhandled exception on %s", request.url)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc), "status_code": 500},
+    )
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "app": settings.app_name}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
