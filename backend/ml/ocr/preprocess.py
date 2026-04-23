@@ -1,8 +1,10 @@
 """
-Image preprocessing utilities for OCR.
+Image preprocessing pipeline for OCR.
 
-Key fix: load_all_pages() returns ALL pages of a PDF,
-not just the first page.
+Enhanced pipeline for low-quality scans:
+  load → upscale (if small) → grayscale → denoise → adaptive threshold → deskew
+
+Supports PDF (all pages via pdf2image) and image files (OpenCV-readable).
 """
 
 import logging
@@ -18,11 +20,8 @@ log = logging.getLogger(__name__)
 # Load — all pages
 # ---------------------------------------------------------------------------
 
-def load_all_pages(input_path: str) -> List[np.ndarray]:
-    """Load every page of a PDF (or a single image) as BGR numpy arrays.
-
-    Returns a list of images — one per page.
-    """
+def load_all_pages(input_path: str, dpi: int = 200) -> List[np.ndarray]:
+    """Load every page of a PDF (or a single image) as BGR numpy arrays."""
     if input_path.lower().endswith(".pdf"):
         try:
             from pdf2image import convert_from_path
@@ -31,75 +30,121 @@ def load_all_pages(input_path: str) -> List[np.ndarray]:
                 "pdf2image is not installed. Run: pip install pdf2image\n"
                 "Also requires poppler: brew install poppler"
             )
-
         try:
-            pil_pages = convert_from_path(input_path, dpi=200)
+            pil_pages = convert_from_path(input_path, dpi=dpi)
         except Exception as exc:
             log.error("pdf2image failed to convert %s: %s", input_path, exc)
             raise
 
-        pages = []
-        for pil_img in pil_pages:
-            bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-            pages.append(bgr)
-
-        log.info("Loaded %d page(s) from PDF: %s", len(pages), input_path)
+        pages = [cv2.cvtColor(np.array(p), cv2.COLOR_RGB2BGR) for p in pil_pages]
+        log.info("[Preprocess] Loaded %d page(s) from PDF: %s", len(pages), input_path)
         return pages
 
-    else:
-        img = cv2.imread(input_path)
-        if img is None:
-            raise FileNotFoundError(f"Unable to read image: {input_path}")
-        log.info("Loaded image: %s — shape %s", input_path, img.shape)
-        return [img]
+    img = cv2.imread(input_path)
+    if img is None:
+        raise FileNotFoundError(f"Unable to read image: {input_path}")
+    log.info("[Preprocess] Loaded image: %s — shape %s", input_path, img.shape)
+    return [img]
 
 
 def load_image(input_path: str) -> np.ndarray:
-    """Load only the first page (legacy compatibility)."""
+    """Legacy single-page helper."""
     return load_all_pages(input_path)[0]
 
 
 # ---------------------------------------------------------------------------
-# Pipeline steps
+# Enhancement steps
 # ---------------------------------------------------------------------------
 
 def to_grayscale(image: np.ndarray) -> np.ndarray:
     if len(image.shape) == 2:
-        return image  # already grayscale
+        return image
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 
+def upscale_if_small(image: np.ndarray, min_width: int = 1200) -> np.ndarray:
+    """Scale up images that are too small for reliable OCR."""
+    h, w = image.shape[:2]
+    if w < min_width:
+        scale = min_width / w
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        log.debug("[Preprocess] Upscaled image: %dx%d → %dx%d", w, h, new_w, new_h)
+    return image
+
+
+def enhance_contrast(image: np.ndarray) -> np.ndarray:
+    """CLAHE contrast enhancement — improves faint text on scanned docs."""
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(image)
+
+
 def denoise(image: np.ndarray, h: int = 7) -> np.ndarray:
-    """Light non-local means denoising. Lower h preserves text details."""
+    """Non-local means denoising — lighter h value preserves text edges."""
     return cv2.fastNlMeansDenoising(image, h=h)
 
 
-def threshold(image: np.ndarray) -> np.ndarray:
-    blur = cv2.GaussianBlur(image, (5, 5), 0)
-    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return thresh
+def adaptive_threshold(image: np.ndarray) -> np.ndarray:
+    """Adaptive binarisation — handles uneven lighting across scanned pages.
+
+    Falls back to Otsu's global threshold if adaptive produces poor results
+    (measured by text pixel ratio).
+    """
+    adaptive = cv2.adaptiveThreshold(
+        image, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=31,
+        C=10,
+    )
+
+    # Sanity check: if >95% or <5% of pixels are white, fall back to Otsu
+    white_ratio = np.sum(adaptive == 255) / adaptive.size
+    if white_ratio > 0.95 or white_ratio < 0.05:
+        log.debug("[Preprocess] Adaptive threshold produced extreme result (%.1f%%), using Otsu", white_ratio * 100)
+        blur = cv2.GaussianBlur(image, (5, 5), 0)
+        _, adaptive = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    return adaptive
 
 
 def deskew(image: np.ndarray) -> np.ndarray:
+    """Correct rotation using white-pixel moments."""
     coords = np.column_stack(np.where(image > 0))
     if coords.size == 0:
         return image
     angle = cv2.minAreaRect(coords)[-1]
-    if angle < -45:
-        angle = -(90 + angle)
-    else:
-        angle = -angle
-    if abs(angle) < 0.5:
+    angle = -(90 + angle) if angle < -45 else -angle
+    if abs(angle) < 0.3:        # skip sub-0.3° corrections
         return image
     h, w = image.shape[:2]
     M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
-    return cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    log.debug("[Preprocess] Deskew applied: %.2f°", angle)
+    return rotated
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline
+# ---------------------------------------------------------------------------
+
+def preprocess_page(bgr_image: np.ndarray) -> np.ndarray:
+    """Full preprocessing pipeline for a single page.
+
+    Steps: upscale → grayscale → contrast → denoise → adaptive threshold → deskew
+    Returns a binary (black text on white) grayscale numpy array.
+    """
+    img = upscale_if_small(bgr_image)
+    gray = to_grayscale(img)
+    enhanced = enhance_contrast(gray)
+    denoised = denoise(enhanced)
+    thresh = adaptive_threshold(denoised)
+    cleaned = deskew(thresh)
+    return cleaned
 
 
 def preprocess_image(input_path: str) -> np.ndarray:
-    """Legacy single-page pipeline (kept for compatibility)."""
+    """Legacy single-page entry-point (kept for compatibility)."""
     img = load_image(input_path)
-    gray = to_grayscale(img)
-    denoised = denoise(gray)
-    thresh = threshold(denoised)
-    return deskew(thresh)
+    return preprocess_page(img)

@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  # ── FastAPI Backend ───────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tax-buddy-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data       # persist uploads + SQLite DB
+      - ./backend/logs:/app/logs       # persist log files
+    environment:
+      - DEBUG=false
+      - DATABASE_URL=sqlite:///./data/taxbuddy.db
+      - UPLOAD_DIR=data/uploads
+      - DEFAULT_TAX_REGIME=old
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/system/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Streamlit Frontend ───────────────────────────────────────────────────
+  frontend:
+    image: python:3.11-slim
+    container_name: tax-buddy-frontend
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://backend:8000/api/v1
+    command: >
+      sh -c "pip install -q streamlit plotly pandas requests &&
+             streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

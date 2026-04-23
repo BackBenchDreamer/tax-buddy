@@ -23,31 +23,46 @@ Tax Buddy is a production-grade, end-to-end pipeline for automated Indian income
 
 ```
 tax-buddy/
-├── backend/                    # FastAPI application
+├── Dockerfile                  # Backend Docker image
+├── docker-compose.yml          # Backend + Frontend services
+├── README.md
+├── .gitignore
+│
+├── backend/
+│   ├── .env                    # Runtime config (git-ignored)
+│   ├── .env.example            # Template (safe to commit)
+│   ├── requirements.txt
 │   ├── app/
+│   │   ├── main.py             # FastAPI entrypoint (logging + DB init)
 │   │   ├── api/
 │   │   │   ├── router.py       # API router registration
-│   │   │   └── routes.py       # Endpoint controllers
-│   │   ├── core/               # Config & settings
+│   │   │   └── routes.py       # Endpoint controllers + DB persistence
+│   │   ├── core/
+│   │   │   ├── config.py       # Pydantic Settings (reads .env)
+│   │   │   ├── database.py     # SQLite via SQLAlchemy (4 tables)
+│   │   │   └── logging_config.py  # Structured logging setup
 │   │   ├── schemas/
 │   │   │   └── schemas.py      # Pydantic request/response models
-│   │   ├── services/
-│   │   │   ├── validation_service.py  # Form 16 vs 26AS rule engine
-│   │   │   └── tax_service.py         # Slab-based tax computation
-│   │   └── main.py             # FastAPI app entry point
+│   │   └── services/
+│   │       ├── validation_service.py  # Form 16 vs 26AS rule engine
+│   │       └── tax_service.py         # Slab-based tax computation
 │   ├── ml/
 │   │   ├── ocr/
 │   │   │   ├── ocr_service.py  # Multi-page OCR (Tesseract + PaddleOCR)
-│   │   │   └── preprocess.py   # PDF→image, grayscale, denoise, deskew
+│   │   │   └── preprocess.py   # Upscale, CLAHE, adaptive threshold, deskew
 │   │   └── ner/
 │   │       ├── ner_service.py  # Regex-primary + transformer-optional NER
 │   │       └── regex_utils.py  # Deterministic field extractors
 │   ├── data/
-│   │   └── uploads/            # Uploaded files (git-ignored)
-│   └── requirements.txt
+│   │   ├── uploads/            # Uploaded files (git-ignored)
+│   │   ├── samples/            # Sample Form 16 PDFs for testing
+│   │   └── taxbuddy.db         # SQLite database (git-ignored)
+│   ├── logs/                   # Rotating log files (git-ignored)
+│   └── tests/
+│       └── test_pipeline.py    # Smoke tests (8 tests, 0.02s)
 │
-└── frontend/                   # Streamlit dashboard
-    ├── app.py                  # Main dashboard (3-column layout)
+└── frontend/
+    ├── app.py                  # Streamlit dashboard
     └── requirements.txt
 ```
 
@@ -109,6 +124,26 @@ source .venv/bin/activate
 pip install streamlit plotly pandas requests
 streamlit run app.py
 # → http://localhost:8501
+```
+
+### 4. Run tests
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m pytest tests/ -v
+# 8 passed in 0.02s
+```
+
+### 5. Docker (alternative)
+
+```bash
+# Build & start everything
+docker compose up --build
+
+# Backend only
+docker build -t tax-buddy-backend .
+docker run -p 8000:8000 -v $(pwd)/backend/data:/app/data tax-buddy-backend
 ```
 
 ---

@@ -1,53 +1,73 @@
 """
 FastAPI application entry point.
 
-Mounts the unified API router under the configured prefix and
-adds global exception handling.
+Startup sequence
+----------------
+1. Configure structured logging
+2. Initialise SQLite DB (create tables if missing)
+3. Mount API router
+4. CORS middleware
 """
 
+import os
 import logging
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.logging_config import configure_logging
+from app.core.database import init_db
 from app.api.router import api_router
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s | %(name)s | %(message)s",
-)
+# ── Logging must be configured before any module-level loggers fire ──────────
+configure_logging(level="DEBUG" if settings.DEBUG else "INFO")
+log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
+# ── Application ──────────────────────────────────────────────────────────────
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="AI-powered Indian income tax filing system — OCR → NER → Validation → Tax Engine",
+    description="OCR → NER → Validation → Tax Engine — production-grade Indian tax filing API",
     version="1.0.0",
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
-    docs_url=f"{settings.API_V1_STR}/docs",
-    redoc_url=f"{settings.API_V1_STR}/redoc",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
-# Include API router
+# ── CORS ─────────────────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Router ───────────────────────────────────────────────────────────────────
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
-# ---------------------------------------------------------------------------
-# Global exception handler
-# ---------------------------------------------------------------------------
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logging.getLogger("app").exception("Unhandled exception on %s", request.url)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": str(exc), "status_code": 500},
-    )
+# ── Lifecycle ────────────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def on_startup():
+    log.info("=== %s starting up ===", settings.PROJECT_NAME)
+    init_db()
+    # Ensure upload directory exists
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    log.info("Upload directory: %s", settings.UPLOAD_DIR)
 
 
+@app.on_event("shutdown")
+async def on_shutdown():
+    log.info("=== %s shutting down ===", settings.PROJECT_NAME)
+
+
+# ── Dev entrypoint ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="debug" if settings.DEBUG else "info",
+    )
