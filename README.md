@@ -15,7 +15,7 @@ Tax Buddy is a production-grade, end-to-end pipeline for automated Indian income
 | **Validation** | Rule-based cross-check of Form 16 vs Form 26AS with trust score (0–100) |
 | **Tax Engine** | Indian slab-based calculator — Old & New regime, Section 87A rebate, 4% cess |
 | **ITR Generation** | Structured ITR-1 (Sahaj) JSON output |
-| **Dashboard** | Streamlit fintech-style UI with Plotly charts and editable entity tables |
+| **Dashboard** | Next.js (App Router) fintech-style UI with Recharts and Tailwind CSS |
 
 ---
 
@@ -62,8 +62,11 @@ tax-buddy/
 │       └── test_pipeline.py    # Smoke tests (8 tests, 0.02s)
 │
 └── frontend/
-    ├── app.py                  # Streamlit dashboard
-    └── requirements.txt
+    ├── app/                    # Next.js App Router pages & layout
+    ├── components/             # Reusable UI components (shadcn, charts)
+    ├── lib/                    # API client and utilities
+    ├── types/                  # TypeScript interfaces
+    └── package.json
 ```
 
 ---
@@ -118,12 +121,9 @@ python -m app.main
 
 ```bash
 cd frontend
-python3 -m venv .venv
-source .venv/bin/activate
-
-pip install streamlit plotly pandas requests
-streamlit run app.py
-# → http://localhost:8501
+npm install
+npm run dev
+# → http://localhost:3000
 ```
 
 ### 4. Run tests
@@ -290,10 +290,11 @@ pytest tests/ -v
 
 | Package | Purpose |
 |---------|---------|
-| `streamlit` | Dashboard framework |
-| `plotly` | Interactive charts |
-| `pandas` | Data tables |
-| `requests` | API client |
+| `next` | React framework |
+| `tailwindcss` | Utility-first CSS |
+| `recharts` | Interactive charts |
+| `lucide-react` | Icons |
+| `sonner` | Toast notifications |
 
 ---
 

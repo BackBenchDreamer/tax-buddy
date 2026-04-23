@@ -116,11 +116,21 @@ Icon?
 .Spotlight-V100
 .Trashes
 
-# ── Node (if any frontend tooling is added) ──────────────────────────────────
+# ── Node / Next.js ──────────────────────────────────────────────────────────
 node_modules/
+.next/
+out/
+build/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 *.dockerignore
