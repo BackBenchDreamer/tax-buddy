@@ -22,9 +22,9 @@ export function Charts({ tax }: ChartsProps) {
     { name: 'Total Tax', value: tax.total_tax, fill: '#f59e0b' },
   ];
 
-  const pieData = (tax.slab_breakdown ?? [])
-    .filter((s) => s.tax_in_slab > 0)
-    .map((s) => ({ name: s.slab, value: s.tax_in_slab }));
+  const pieData = (tax.breakdown ?? [])
+    .filter((s) => s.tax > 0)
+    .map((s) => ({ name: s.range, value: s.tax }));
 
   const customTooltip = ({ active, payload }: { active?: boolean; payload?: { value: number; name: string }[] }) => {
     if (!active || !payload?.length) return null;

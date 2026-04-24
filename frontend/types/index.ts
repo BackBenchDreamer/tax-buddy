@@ -34,10 +34,10 @@ export interface ValidationResult {
 }
 
 export interface SlabBreakdown {
-  slab: string;
+  range: string;
   rate: number;
-  taxable_in_slab: number;
-  tax_in_slab: number;
+  taxable_amount: number;
+  tax: number;
 }
 
 export interface TaxResult {
@@ -45,14 +45,14 @@ export interface TaxResult {
   gross_income: number;
   deductions: number;
   taxable_income: number;
-  tax_before_rebate: number;
+  base_tax: number;
   rebate: number;
   surcharge: number;
   cess: number;
   total_tax: number;
   tds_paid: number;
   refund_or_payable: number;
-  slab_breakdown?: SlabBreakdown[];
+  breakdown?: SlabBreakdown[];
 }
 
 export interface ProcessResponse {

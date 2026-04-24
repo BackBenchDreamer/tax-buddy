@@ -137,18 +137,6 @@ export function FileUpload({ onProcess, isLoading }: FileUploadProps) {
           </>
         )}
       </button>
-
-      {/* Processing status */}
-      {isLoading && (
-        <div className="space-y-2">
-          {['Running OCR…', 'Extracting entities…', 'Validating data…', 'Computing tax…'].map((step, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
-              <span className="text-xs text-slate-500">{step}</span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

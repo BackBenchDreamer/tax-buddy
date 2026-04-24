@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { FileUpload } from '@/components/FileUpload';
+import { ProcessingSteps, StepKey } from '@/components/ProcessingSteps';
 import { ExtractedDataTable } from '@/components/ExtractedDataTable';
 import { ValidationPanel } from '@/components/ValidationPanel';
 import { TaxSummary } from '@/components/TaxSummary';
@@ -11,34 +12,66 @@ import { processDocument, computeTax, APIError } from '@/lib/api';
 import { ProcessResponse, TaxResult } from '@/types';
 import { Zap, Activity, ArrowLeftRight } from 'lucide-react';
 
+type AppState = 'idle' | 'processing' | 'results';
+
 export default function Home() {
-  const [loading, setLoading] = useState(false);
+  // ── Core state ─────────────────────────────────────────────────────────
+  const [appState, setAppState] = useState<AppState>('idle');
   const [result, setResult] = useState<ProcessResponse | null>(null);
   const [regimeNew, setRegimeNew] = useState<TaxResult | null>(null);
   const [showComparison, setShowComparison] = useState(false);
   const [comparingRegimes, setComparingRegimes] = useState(false);
 
-  const handleProcess = async (file: File) => {
-    setLoading(true);
+  // ── Processing orchestration ───────────────────────────────────────────
+  const [apiResolved, setApiResolved] = useState(false);
+  const [processingError, setProcessingError] = useState<{ stage: StepKey; message: string } | null>(null);
+  const currentFileRef = useRef<File | null>(null);
+  const [currentFileName, setCurrentFileName] = useState<string>('');
+
+  const handleProcess = useCallback(async (file: File) => {
+    // Reset all state for new run
+    currentFileRef.current = file;
+    setCurrentFileName(file.name);
     setResult(null);
     setRegimeNew(null);
     setShowComparison(false);
+    setApiResolved(false);
+    setProcessingError(null);
+    setAppState('processing');
+
     try {
       const data = await processDocument(file);
       setResult(data);
-      toast.success('Document processed successfully!', {
-        description: `${data.entities.length} fields extracted · Trust score: ${data.validation.score}/100`,
-      });
+      setApiResolved(true);
+      // onComplete callback in ProcessingSteps will transition to 'results'
     } catch (err) {
+      const stage: StepKey = (err instanceof APIError && err.stage === 'process') ? 'ocr' : 'ocr';
       const msg = err instanceof APIError
-        ? `[${err.stage}] ${err.message}`
+        ? err.message
         : 'Unexpected error. Is the backend running?';
-      toast.error('Processing failed', { description: msg });
-    } finally {
-      setLoading(false);
-    }
-  };
 
+      setProcessingError({ stage, message: msg });
+      setApiResolved(true);
+      toast.error('Processing failed', { description: msg });
+    }
+  }, []);
+
+  const handleProcessingComplete = useCallback(() => {
+    setAppState('results');
+    if (result) {
+      toast.success('Document processed successfully!', {
+        description: `${result.entities.length} fields extracted · Trust score: ${result.validation.score}/100`,
+      });
+    }
+  }, [result]);
+
+  const handleRetry = useCallback(() => {
+    if (currentFileRef.current) {
+      handleProcess(currentFileRef.current);
+    }
+  }, [handleProcess]);
+
+  // ── Regime comparison ──────────────────────────────────────────────────
   const handleCompareRegimes = async () => {
     if (!result?.tax) return;
     setComparingRegimes(true);
@@ -63,9 +96,10 @@ export default function Home() {
     ? { old: result.tax, new: regimeNew }
     : null;
 
+  // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen flex flex-col">
-      {/* ── Top Nav ─────────────────────────────────────────────────────── */}
+      {/* ── Top Nav ──────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 border-b border-slate-800/60 bg-[#0a0b0f]/80 backdrop-blur-xl">
         <div className="max-w-screen-2xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -78,7 +112,7 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {result && (
+            {appState === 'results' && result && (
               <button
                 onClick={handleCompareRegimes}
                 disabled={comparingRegimes}
@@ -96,8 +130,8 @@ export default function Home() {
         </div>
       </header>
 
-      {/* ── Hero ────────────────────────────────────────────────────────── */}
-      {!result && !loading && (
+      {/* ── Hero (only when idle) ────────────────────────────────────────── */}
+      {appState === 'idle' && (
         <div className="text-center py-16 px-6">
           <div className="inline-flex items-center gap-2 text-xs text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 rounded-full px-3 py-1 mb-6">
             <Activity className="w-3 h-3" />
@@ -114,19 +148,35 @@ export default function Home() {
         </div>
       )}
 
-      {/* ── Main Layout ─────────────────────────────────────────────────── */}
+      {/* ── Main Content ─────────────────────────────────────────────────── */}
       <main className="flex-1 max-w-screen-2xl mx-auto w-full px-4 md:px-6 pb-10">
-        {!result ? (
+        {appState === 'idle' && (
           /* Upload-focused layout */
           <div className="max-w-md mx-auto">
-            <FileUpload onProcess={handleProcess} isLoading={loading} />
+            <FileUpload onProcess={handleProcess} isLoading={false} />
           </div>
-        ) : (
+        )}
+
+        {appState === 'processing' && (
+          /* Processing panel — replaces upload card */
+          <div className="max-w-md mx-auto">
+            <ProcessingSteps
+              isProcessing={true}
+              apiResolved={apiResolved}
+              error={processingError}
+              onComplete={handleProcessingComplete}
+              onRetry={handleRetry}
+              fileName={currentFileName}
+            />
+          </div>
+        )}
+
+        {appState === 'results' && result && (
           /* Results dashboard */
           <div className="flex flex-col gap-5">
-            {/* Upload strip */}
+            {/* Compact upload strip */}
             <div className="max-w-sm">
-              <FileUpload onProcess={handleProcess} isLoading={loading} />
+              <FileUpload onProcess={handleProcess} isLoading={false} />
             </div>
 
             {/* 3-column grid */}

@@ -57,21 +57,21 @@ export function TaxSummary({ result, comparison }: TaxSummaryProps) {
       </div>
 
       {/* Slab Table */}
-      {result.slab_breakdown && result.slab_breakdown.length > 0 && (
+      {result.breakdown && result.breakdown.length > 0 && (
         <div className="rounded-xl bg-slate-900/40 border border-slate-800/60 overflow-hidden">
           <div className="px-4 py-2.5 border-b border-slate-800/60 bg-slate-800/30">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Slab Breakdown</span>
           </div>
           <div className="divide-y divide-slate-800/40">
-            {result.slab_breakdown.map((slab, i) => (
+            {result.breakdown.map((slab, i) => (
               <div key={i} className="flex items-center justify-between px-4 py-2.5">
                 <div>
-                  <div className="text-xs font-medium text-slate-300">{slab.slab}</div>
+                  <div className="text-xs font-medium text-slate-300">{slab.range}</div>
                   <div className="text-[10px] text-slate-600">{(slab.rate * 100).toFixed(0)}% rate</div>
                 </div>
                 <div className="text-right">
-                  <div className="text-xs font-semibold text-amber-400">{formatCurrency(slab.tax_in_slab)}</div>
-                  <div className="text-[10px] text-slate-600">{formatCurrency(slab.taxable_in_slab)}</div>
+                  <div className="text-xs font-semibold text-amber-400">{formatCurrency(slab.tax)}</div>
+                  <div className="text-[10px] text-slate-600">{formatCurrency(slab.taxable_amount)}</div>
                 </div>
               </div>
             ))}
@@ -87,7 +87,7 @@ export function TaxSummary({ result, comparison }: TaxSummaryProps) {
       <div className="rounded-xl bg-slate-900/40 border border-slate-800/60 divide-y divide-slate-800/40">
         {[
           { label: 'Deductions', value: result.deductions },
-          { label: 'Tax Before Rebate', value: result.tax_before_rebate },
+          { label: 'Tax Before Rebate', value: result.base_tax },
           { label: 'Section 87A Rebate', value: result.rebate },
           { label: 'Health & Edu Cess (4%)', value: result.cess },
           { label: 'TDS Already Paid', value: result.tds_paid },

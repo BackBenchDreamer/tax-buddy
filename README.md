@@ -76,8 +76,9 @@ tax-buddy/
 ### Prerequisites
 
 | Tool | Version | Install |
-|------|---------|---------|
+|------|---------|---------| 
 | Python | 3.10–3.13 | [python.org](https://python.org) |
+| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
 | Tesseract OCR | 5.x | `brew install tesseract` |
 | Poppler | latest | `brew install poppler` |
 
@@ -117,13 +118,26 @@ python -m app.main
 # → Swagger docs: http://localhost:8000/docs
 ```
 
-### 3. Frontend Setup
+### 3. Frontend Setup (Next.js)
+
+> **Note:** The frontend is now a Next.js app (not Streamlit). Requires **Node.js 18+**.  
+> If a Python venv is active, deactivate it first: `deactivate`
 
 ```bash
 cd frontend
-npm install
+npm install       # installs ~450 packages
 npm run dev
 # → http://localhost:3000
+```
+
+If `npm install` shows "audited 1 package" or `npm run dev` fails with "Missing script",  
+run a clean install:
+
+```bash
+cd frontend
+rm -rf node_modules package-lock.json
+npm install
+npm run dev
 ```
 
 ### 4. Run tests
