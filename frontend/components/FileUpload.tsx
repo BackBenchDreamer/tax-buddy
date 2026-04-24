@@ -117,7 +117,7 @@ export function FileUpload({ onProcess, isLoading }: FileUploadProps) {
       {/* Process Button */}
       <button
         onClick={handleProcess}
-        disabled={!file || isLoading}
+        disabled={Boolean(!file || isLoading)}
         className={cn(
           'relative w-full h-11 rounded-xl font-semibold text-sm transition-all duration-200 flex items-center justify-center gap-2 overflow-hidden',
           !file || isLoading
