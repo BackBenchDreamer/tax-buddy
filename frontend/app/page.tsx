@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { FileUpload } from '@/components/FileUpload';
 import { ProcessingSteps, StepKey } from '@/components/ProcessingSteps';
@@ -10,9 +10,9 @@ import { TaxSummary } from '@/components/TaxSummary';
 import { RegimeComparison } from '@/components/RegimeComparison';
 import { TaxExplanation } from '@/components/TaxExplanation';
 import { Charts } from '@/components/Charts';
-import { processDocument, computeTax, APIError } from '@/lib/api';
+import { processDocument, computeTax, downloadTaxReport, APIError } from '@/lib/api';
 import { ProcessResponse, TaxResult } from '@/types';
-import { Zap, ArrowLeftRight, FileText, CheckCircle2 } from 'lucide-react';
+import { Zap, FileText, Download } from 'lucide-react';
 
 type AppState = 'idle' | 'processing' | 'results';
 
@@ -103,12 +103,30 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-4">
             {appState === 'results' && (
-              <button
-                onClick={() => setAppState('idle')}
-                className="text-xs font-semibold px-4 py-2 rounded-lg bg-slate-800/50 hover:bg-slate-700/50 border border-slate-700/50 transition-colors"
-              >
-                Upload another document
-              </button>
+              <>
+                {result?.tax && (
+                  <button
+                    onClick={() => {
+                      if (!result) return;
+                      downloadTaxReport({
+                        entities: result.entities,
+                        validation: result.validation,
+                        tax: result.tax as unknown as Record<string, unknown>,
+                      }).catch(() => toast.error('Report generation failed'));
+                    }}
+                    className="text-xs font-semibold px-4 py-2 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-400 transition-colors flex items-center gap-2"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download Report
+                  </button>
+                )}
+                <button
+                  onClick={() => setAppState('idle')}
+                  className="text-xs font-semibold px-4 py-2 rounded-lg bg-slate-800/50 hover:bg-slate-700/50 border border-slate-700/50 transition-colors"
+                >
+                  Upload another document
+                </button>
+              </>
             )}
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -162,9 +180,37 @@ export default function Home() {
             
             {/* ROW 1: HERO TAX SUMMARY */}
             <section className="animate-in slide-in-from-bottom-4 fade-in duration-700 delay-100 fill-mode-both">
-              {result.tax ? (
-                <TaxSummary result={result.tax} />
-              ) : (
+              {result.tax ? (() => {
+                // Determine recommended regime: show whichever has lower total_tax
+                const oldTax = result.tax;
+                const newTax = regimeNew;
+                const hasComparison = oldTax && newTax;
+                
+                let heroResult = oldTax;
+                let recommendedRegime: string | undefined;
+                let savings: number | undefined;
+                
+                if (hasComparison && newTax) {
+                  if (newTax.total_tax < oldTax.total_tax) {
+                    heroResult = newTax;
+                    recommendedRegime = 'new';
+                    savings = oldTax.total_tax - newTax.total_tax;
+                  } else if (oldTax.total_tax < newTax.total_tax) {
+                    heroResult = oldTax;
+                    recommendedRegime = 'old';
+                    savings = newTax.total_tax - oldTax.total_tax;
+                  }
+                }
+                
+                return (
+                  <TaxSummary
+                    result={heroResult}
+                    recommended={hasComparison ? heroResult : null}
+                    recommendedRegime={recommendedRegime}
+                    savings={savings}
+                  />
+                );
+              })() : (
                 <div className="p-8 rounded-2xl bg-slate-900/50 border border-slate-800 text-center text-slate-500">
                   Tax computation not available.
                 </div>

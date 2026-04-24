@@ -90,12 +90,61 @@ class OCRService:
         return blocks
 
     # ------------------------------------------------------------------
-    # Aggregate
+    # Aggregate — line-based grouping for structure-aware extraction
     # ------------------------------------------------------------------
     @staticmethod
     def _aggregate(blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        text = " ".join(b["text"] for b in blocks)
-        avg_conf = round(float(np.mean([b["confidence"] for b in blocks])), 4) if blocks else 0.0
+        """Group blocks into lines using Y-coordinate proximity, then join.
+
+        This produces structured text with newlines between logical lines,
+        which is critical for keyword-based extraction that relies on
+        same-line matching (e.g., "Gross Salary  751585.00").
+        """
+        if not blocks:
+            return {"text": "", "blocks": [], "average_confidence": 0.0}
+
+        avg_conf = round(float(np.mean([b["confidence"] for b in blocks])), 4)
+
+        # Sort blocks by vertical position (top of bbox), then horizontal
+        def _y_center(b: Dict[str, Any]) -> float:
+            bbox = b.get("bbox", [])
+            if len(bbox) >= 4:
+                return (bbox[1] + bbox[3]) / 2.0  # (top + bottom) / 2
+            return 0.0
+
+        def _x_start(b: Dict[str, Any]) -> float:
+            bbox = b.get("bbox", [])
+            return float(bbox[0]) if bbox else 0.0
+
+        sorted_blocks = sorted(blocks, key=lambda b: (_y_center(b), _x_start(b)))
+
+        # Group into lines — blocks within 15px vertically are same line
+        lines: List[List[Dict[str, Any]]] = []
+        current_line: List[Dict[str, Any]] = []
+        prev_y = -999.0
+        LINE_THRESHOLD = 15.0
+
+        for block in sorted_blocks:
+            y = _y_center(block)
+            if current_line and abs(y - prev_y) > LINE_THRESHOLD:
+                lines.append(current_line)
+                current_line = []
+            current_line.append(block)
+            prev_y = y
+
+        if current_line:
+            lines.append(current_line)
+
+        # Join blocks within each line with spaces, lines with newlines
+        text_lines = []
+        for line_blocks in lines:
+            line_text = " ".join(b["text"] for b in line_blocks)
+            text_lines.append(line_text)
+
+        text = "\n".join(text_lines)
+
+        log.info("[OCR] Aggregated %d blocks → %d lines", len(blocks), len(lines))
+
         return {"text": text, "blocks": blocks, "average_confidence": avg_conf}
 
     # ------------------------------------------------------------------

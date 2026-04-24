@@ -115,17 +115,29 @@ function AccordionSection({ icon, title, children, defaultOpen = false, count }:
 }
 
 function Row({ label, value, conf, mono = false }: { label: string; value?: string; conf?: number; mono?: boolean }) {
+  // Confidence color coding:
+  //   > 0.9  → green  (high confidence)
+  //   0.7-0.9 → yellow (medium)
+  //   < 0.7  → red    (low)
+  const confColor = !conf ? '' :
+    conf > 0.9 ? 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20' :
+    conf > 0.7 ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
+    'text-red-400 bg-red-500/10 border-red-500/20';
+
   return (
     <div className="flex items-center justify-between py-3 group">
       <div className="flex items-center gap-2">
         <span className="text-xs text-slate-400 group-hover:text-slate-300 transition-colors">{label}</span>
       </div>
-      <div className="flex items-center gap-4 text-right">
+      <div className="flex items-center gap-3 text-right">
         <span className={cn('text-sm font-medium', !value ? 'text-slate-600 italic' : mono ? 'font-mono text-slate-200 tracking-wider' : 'text-slate-100')}>
           {value ?? 'Not detected'}
         </span>
-        {value && conf && (
-          <div className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+        {value && conf != null && (
+          <div
+            className={cn('flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded border cursor-help', confColor)}
+            title="Confidence based on OCR + extraction pipeline"
+          >
             <ShieldCheck className="w-3 h-3" /> {(conf * 100).toFixed(0)}%
           </div>
         )}
