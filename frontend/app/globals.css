@@ -56,6 +56,27 @@ body {
   box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.1), 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 
+/* Tax hero card — elevated visual weight */
+.tax-hero-card {
+  background: linear-gradient(135deg, var(--surface) 0%, #151823 100%);
+  border: 1px solid rgba(245, 158, 11, 0.12);
+  border-radius: 20px;
+  box-shadow:
+    0 0 0 1px rgba(245, 158, 11, 0.06),
+    0 0 40px rgba(245, 158, 11, 0.04),
+    0 12px 40px rgba(0, 0, 0, 0.5);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+}
+
+.tax-hero-card:hover {
+  border-color: rgba(245, 158, 11, 0.2);
+  box-shadow:
+    0 0 0 1px rgba(245, 158, 11, 0.1),
+    0 0 60px rgba(245, 158, 11, 0.06),
+    0 16px 48px rgba(0, 0, 0, 0.6);
+  transform: translateY(-1px);
+}
+
 /* Shimmer animation for loading state */
 @keyframes shimmer {
   0% { background-position: -200% 0; }

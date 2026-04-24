@@ -172,28 +172,54 @@ export default function Home() {
         )}
 
         {appState === 'results' && result && (
-          /* Results dashboard */
-          <div className="flex flex-col gap-5">
+          /* Results dashboard — hierarchical layout */
+          <div className="flex flex-col gap-8">
             {/* Compact upload strip */}
             <div className="max-w-sm">
               <FileUpload onProcess={handleProcess} isLoading={false} />
             </div>
 
-            {/* 3-column grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <ExtractedDataTable entities={result.entities} />
-              <ValidationPanel result={result.validation} />
-              {result.tax ? (
-                <TaxSummary result={result.tax} comparison={comparison} />
-              ) : (
-                <div className="glow-card p-8 flex items-center justify-center">
-                  <p className="text-slate-600 text-sm">Tax result unavailable</p>
+            {/* ── TOP ROW: Tax Summary (primary) + Validation (support) ── */}
+            <section>
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-1 h-5 rounded-full bg-gradient-to-b from-amber-400 to-amber-600" />
+                <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Results</h2>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="lg:col-span-2">
+                  {result.tax ? (
+                    <TaxSummary result={result.tax} comparison={comparison} />
+                  ) : (
+                    <div className="glow-card p-8 flex items-center justify-center">
+                      <p className="text-slate-600 text-sm">Tax result unavailable</p>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+                <div className="lg:col-span-1">
+                  <ValidationPanel result={result.validation} />
+                </div>
+              </div>
+            </section>
 
-            {/* Charts row */}
-            {result.tax && <Charts tax={result.tax} />}
+            {/* ── MIDDLE ROW: Extracted Data (secondary) ── */}
+            <section>
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-1 h-5 rounded-full bg-gradient-to-b from-violet-400 to-violet-600" />
+                <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Document Details</h2>
+              </div>
+              <ExtractedDataTable entities={result.entities} />
+            </section>
+
+            {/* ── BOTTOM ROW: Charts ── */}
+            {result.tax && (
+              <section>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-1 h-5 rounded-full bg-gradient-to-b from-indigo-400 to-indigo-600" />
+                  <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Analytics</h2>
+                </div>
+                <Charts tax={result.tax} />
+              </section>
+            )}
           </div>
         )}
       </main>
