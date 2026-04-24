@@ -1,6 +1,12 @@
 """
 Deterministic regex-based extraction for Indian tax documents (Form 16).
 
+Architecture
+------------
+1. SECTION PARSING — Split OCR text into PART A and PART B.
+2. FIELD EXTRACTION — Label-aware keyword matching, NOT random scanning.
+3. FALLBACK — Line-by-line keyword search with nearest-number extraction.
+
 Design principles
 -----------------
 * Every critical field has its own function — easy to tune independently.
@@ -16,7 +22,7 @@ TDS, AssessmentYear, Section80C, Section80D
 
 import re
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -34,132 +40,193 @@ TAN_RE = re.compile(r"\b([A-Z]{4}[0-9]{5}[A-Z])\b")
 AY_RE = re.compile(r"\b(20\d{2}-(?:20)?\d{2})\b")
 
 # Indian numeric amount: handles 8,73,898 or 873898 or 873898.00
-AMOUNT_RE = re.compile(r"\b(\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?|\d{5,}(?:\.\d{1,2})?)\b")
+AMOUNT_RE = re.compile(r"\b(\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?|\d{4,}(?:\.\d{1,2})?)\b")
+
 
 def _to_float(raw: str) -> float:
     return float(raw.replace(",", ""))
 
 
 def _is_postal_code(raw: str, val: float) -> bool:
-    """Return True if this looks like an Indian 6-digit postal code.
-
-    Key distinction: financial amounts always have decimals (751585.00),
-    postal codes are whole numbers (410210, 560075).
-    """
-    if "." in raw:          # has decimal → it's a financial figure, not a postal code
+    """Return True if this looks like an Indian 6-digit postal code."""
+    if "." in raw:
         return False
-    if "," in raw:          # comma-formatted (e.g. 1,50,000) → financial
+    if "," in raw:
         return False
     return 100000 <= val <= 999999 and val == int(val)
 
 
-def _find_amount_near(text: str, *keywords, window: int = 120) -> Optional[float]:
-    """Find the first valid large amount within `window` chars AFTER any keyword match."""
-    for kw in keywords:
-        m = re.search(kw, text, re.IGNORECASE)
+# ---------------------------------------------------------------------------
+# Section Parsing — Split Form 16 into PART A / PART B
+# ---------------------------------------------------------------------------
+
+def split_sections(text: str) -> Tuple[str, str, str]:
+    """Split Form 16 OCR text into (part_a, part_b, full_text).
+
+    Looks for "PART A" and "PART B" markers.
+    If not found, returns full text for both (fallback mode).
+    """
+    text_upper = text.upper()
+
+    # Find PART B first (it's the more important section)
+    part_b_markers = [
+        r"PART\s*[-—]?\s*B\b",
+        r"DETAILS\s+OF\s+SALARY",
+        r"ANNEXURE.*PART\s*B",
+    ]
+
+    part_a_markers = [
+        r"PART\s*[-—]?\s*A\b",
+        r"CERTIFICATE.*SECTION\s+203",
+        r"FORM\s+NO\.?\s*16",
+    ]
+
+    part_b_start = len(text)  # default: end of text
+    for pat in part_b_markers:
+        m = re.search(pat, text_upper)
         if m:
-            # Search in a window AFTER the keyword (not before)
-            snippet = text[m.end(): m.end() + window]
-            for am in AMOUNT_RE.finditer(snippet):
-                try:
-                    val = _to_float(am.group())
-                    if val >= 10000 and not _is_postal_code(am.group(), val):
-                        return val
-                except ValueError:
-                    continue
-    return None
+            part_b_start = m.start()
+            log.info("[SECTION] Found PART B marker at char %d", part_b_start)
+            break
+
+    part_a_text = text[:part_b_start]
+    part_b_text = text[part_b_start:]
+
+    if part_b_start == len(text):
+        log.warning("[SECTION] No PART B marker found — using full text for both sections")
+        part_a_text = text
+        part_b_text = text
+
+    log.info("[SECTION] PART A: %d chars, PART B: %d chars", len(part_a_text), len(part_b_text))
+    return part_a_text, part_b_text, text
 
 
-def _find_amount_on_same_line(text: str, *keywords) -> Optional[float]:
-    """Find the first valid large amount within 150 chars AFTER any keyword match."""
+# ---------------------------------------------------------------------------
+# Amount extraction helpers
+# ---------------------------------------------------------------------------
+
+def _find_amount_on_same_line(text: str, *keywords, min_val: float = 1000) -> Optional[float]:
+    """Find the first valid amount AFTER any keyword match on the same logical line."""
     for kw in keywords:
         m = re.search(kw, text, re.IGNORECASE)
         if not m:
             continue
-        window = text[m.end(): m.end() + 150].replace('|', ' ')
+        # Search in a window after the keyword (same line ~ 200 chars)
+        window = text[m.end(): m.end() + 200].replace('|', ' ')
         for am in AMOUNT_RE.finditer(window):
             raw = am.group()
             try:
                 val = _to_float(raw)
-                if val >= 10000 and not _is_postal_code(raw, val):
+                if val >= min_val and not _is_postal_code(raw, val):
                     return val
             except ValueError:
                 continue
     return None
 
 
+def _find_amount_near(text: str, *keywords, window: int = 150, min_val: float = 1000) -> Optional[float]:
+    """Find the first valid amount within `window` chars AFTER any keyword match."""
+    for kw in keywords:
+        m = re.search(kw, text, re.IGNORECASE)
+        if m:
+            snippet = text[m.end(): m.end() + window]
+            for am in AMOUNT_RE.finditer(snippet):
+                try:
+                    val = _to_float(am.group())
+                    if val >= min_val and not _is_postal_code(am.group(), val):
+                        return val
+                except ValueError:
+                    continue
+    return None
+
+
+def _find_all_amounts_on_line(text: str, keyword: str) -> List[float]:
+    """Find ALL valid amounts after a keyword match (for multi-column rows)."""
+    results = []
+    m = re.search(keyword, text, re.IGNORECASE)
+    if not m:
+        return results
+    window = text[m.end(): m.end() + 300].replace('|', ' ')
+    for am in AMOUNT_RE.finditer(window):
+        raw = am.group()
+        try:
+            val = _to_float(raw)
+            if val >= 100:  # lower threshold for tax amounts
+                results.append(val)
+        except ValueError:
+            continue
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Individual extractors
 # ---------------------------------------------------------------------------
 
-def extract_pan(text: str) -> Optional[str]:
-    """Extract PAN — look near 'PAN of Employee' label first."""
-    # Try contextual match near label
-    m = re.search(r"PAN\s+of\s+(?:the\s+)?(?:Employee|Deductee)[^\w]*([A-Z]{5}[0-9]{4}[A-Z])", text, re.IGNORECASE)
-    if m:
-        log.debug("PAN (contextual): %s", m.group(1))
-        return m.group(1)
+def extract_pan(text: str, part_a: str) -> Optional[str]:
+    """Extract PAN — look near 'PAN of Employee' label first (in PART A)."""
+    # Try contextual match in PART A
+    for pat in [
+        r"PAN\s+of\s+(?:the\s+)?(?:Employee|Deductee)[^A-Z]*([A-Z]{5}[0-9]{4}[A-Z])",
+        r"PAN\s*[:\-]?\s*([A-Z]{5}[0-9]{4}[A-Z])",
+    ]:
+        m = re.search(pat, part_a, re.IGNORECASE)
+        if m:
+            log.info("[EXTRACT] PAN (PART A contextual): %s", m.group(1))
+            return m.group(1)
 
-    # Try PAN of Employee: VALUE pattern
-    m = re.search(r"PAN\s+of\s+Employee\s*[:\-]?\s*([A-Z]{5}[0-9]{4}[A-Z])", text, re.IGNORECASE)
-    if m:
-        return m.group(1)
-
-    # Fallback: first PAN-pattern match anywhere
+    # Fallback: search full text
     all_pans = PAN_RE.findall(text)
-    # Filter out TAN-like patterns (TAN starts with 4 alpha + 5 digit + 1 alpha)
-    # A PAN with 4th char being 'P' (person) is typical but not mandated — just return first
     if all_pans:
-        log.debug("PAN (regex fallback): %s", all_pans[0])
+        log.info("[EXTRACT] PAN (fallback): %s", all_pans[0])
         return all_pans[0]
     return None
 
 
-def extract_tan(text: str) -> Optional[str]:
-    """Extract TAN — look near 'TAN of Employer/Deductor' label first."""
-    m = re.search(r"TAN\s+of\s+(?:Employer|Deductor)[^\w]*([A-Z]{4}[0-9]{5}[A-Z])", text, re.IGNORECASE)
-    if m:
-        log.debug("TAN (contextual): %s", m.group(1))
-        return m.group(1)
-
-    m = re.search(r"TAN\s*[:\-]?\s*([A-Z]{4}[0-9]{5}[A-Z])", text, re.IGNORECASE)
-    if m:
-        return m.group(1)
+def extract_tan(text: str, part_a: str) -> Optional[str]:
+    """Extract TAN — look near 'TAN of Employer/Deductor' label (in PART A)."""
+    for pat in [
+        r"TAN\s+of\s+(?:the\s+)?(?:Employer|Deductor)[^A-Z]*([A-Z]{4}[0-9]{5}[A-Z])",
+        r"TAN\s*[:\-]?\s*([A-Z]{4}[0-9]{5}[A-Z])",
+    ]:
+        m = re.search(pat, part_a, re.IGNORECASE)
+        if m:
+            log.info("[EXTRACT] TAN (PART A contextual): %s", m.group(1))
+            return m.group(1)
 
     all_tans = TAN_RE.findall(text)
     if all_tans:
-        log.debug("TAN (regex fallback): %s", all_tans[0])
+        log.info("[EXTRACT] TAN (fallback): %s", all_tans[0])
         return all_tans[0]
     return None
 
 
-def extract_assessment_year(text: str) -> Optional[str]:
+def extract_assessment_year(text: str, part_a: str) -> Optional[str]:
     """Extract Assessment Year."""
-    m = re.search(r"Assessment\s+Year\s*[:\-]?\s*(20\d{2}[-–]\d{2,4})", text, re.IGNORECASE)
+    m = re.search(r"Assessment\s+Year\s*[:\-]?\s*(20\d{2}[-–]\d{2,4})", part_a, re.IGNORECASE)
     if m:
+        log.info("[EXTRACT] AssessmentYear (PART A): %s", m.group(1))
         return m.group(1)
     all_ay = AY_RE.findall(text)
     if all_ay:
+        log.info("[EXTRACT] AssessmentYear (fallback): %s", all_ay[0])
         return all_ay[0]
     return None
 
 
-def extract_employer_name(text: str) -> Optional[str]:
-    """Extract employer name from Form 16."""
-    # Try explicit label pattern
+def extract_employer_name(text: str, part_a: str) -> Optional[str]:
+    """Extract employer name from Form 16 PART A."""
     for pat in [
-        r"Name\s+of\s+the\s+employer\s*[:\-]\s*([A-Za-z][A-Za-z0-9 &.,()\-]{5,80})",
-        r"employer\s*[:\-]\s*([A-Z][A-Za-z0-9 &.,()\-]{5,80})",
+        r"Name\s+of\s+the\s+employer\s*[:\-]\s*([A-Za-z][A-Za-z0-9 &.,()'\-]{5,80})",
+        r"employer\s*[:\-]\s*([A-Z][A-Za-z0-9 &.,()'\-]{5,80})",
     ]:
-        m = re.search(pat, text, re.IGNORECASE)
+        m = re.search(pat, part_a, re.IGNORECASE)
         if m:
             name = m.group(1).strip().rstrip('.,').strip()
             if len(name) > 5:
-                log.debug("EmployerName (label): %s", name)
+                log.info("[EXTRACT] EmployerName (label): %s", name)
                 return name
 
-    # Look for all-caps company name patterns (common in Form 16)
-    # Must contain at least 2 words and end with PRIVATE/LIMITED/LTD/SERVICES/TECHNOLOGIES
+    # All-caps company name pattern
     m = re.search(
         r"([A-Z][A-Z &]{5,}(?:PRIVATE\s+LIMITED|LIMITED|PVT\.?\s*LTD|TECHNOLOGIES?|SERVICES?))",
         text
@@ -167,9 +234,8 @@ def extract_employer_name(text: str) -> Optional[str]:
     if m:
         name = m.group(1).strip()
         if len(name) > 8:
-            log.debug("EmployerName (all-caps pattern): %s", name)
+            log.info("[EXTRACT] EmployerName (all-caps pattern): %s", name)
             return name
-
     return None
 
 
@@ -189,107 +255,197 @@ def extract_employee_name(text: str) -> Optional[str]:
     return None
 
 
-def extract_gross_salary(text: str) -> Optional[float]:
+def extract_gross_salary(text: str, part_b: str) -> Optional[float]:
     """Extract gross salary from Form 16 Part B.
 
-    Actual OCR patterns seen:
-      'Gross total income (6+8) | 751585.00'
-      'Total amount of salary received from current employer  803985.00'
-      'Income chargeable under the head "Salaries" ... 751585.00'
-      'Salary as per provisions contained in section 17(1) 872769.00'
+    Priority:
+    1. "Salary as per provisions contained in section 17(1)" — actual gross
+    2. "Total amount of salary received from current employer"
+    3. "Gross Salary" label
+    4. Fallback: full text search
     """
-    keywords = [
-        r"Gross\s+total\s+income",
-        r"Total\s+amount\s+of\s+salary\s+received\s+from\s+current\s+employer",
-        r"Income\s+chargeable\s+under\s+the\s+head\s+.{0,10}Salaries",
+    # Search in PART B first (where salary details live)
+    keywords_b = [
         r"Salary\s+as\s+per\s+provisions\s+contained\s+in\s+section\s+17\(1\)",
+        r"Total\s+amount\s+of\s+salary\s+received\s+from\s+current\s+employer",
         r"Gross\s+Salary",
     ]
-    val = _find_amount_on_same_line(text, *keywords)
+    val = _find_amount_on_same_line(part_b, *keywords_b, min_val=10000)
     if val:
-        log.debug("GrossSalary (line match): %s", val)
+        log.info("[EXTRACT] GrossSalary (PART B line match): %.0f", val)
         return val
-    val = _find_amount_near(text, *keywords, window=150)
+
+    val = _find_amount_near(part_b, *keywords_b, min_val=10000)
     if val:
-        log.debug("GrossSalary (proximity): %s", val)
+        log.info("[EXTRACT] GrossSalary (PART B proximity): %.0f", val)
+        return val
+
+    # Fallback to full text
+    val = _find_amount_on_same_line(text, *keywords_b, min_val=10000)
+    if val:
+        log.info("[EXTRACT] GrossSalary (full text fallback): %.0f", val)
         return val
     return None
 
 
-def extract_taxable_income(text: str) -> Optional[float]:
-    """Extract total taxable income.
+def extract_gross_total_income(text: str, part_b: str) -> Optional[float]:
+    """Extract gross total income (often used as the 'income' figure)."""
+    keywords = [
+        r"Gross\s+total\s+income",
+        r"Income\s+chargeable\s+under\s+the\s+head\s+.{0,10}Salaries",
+    ]
+    val = _find_amount_on_same_line(part_b, *keywords, min_val=10000)
+    if val:
+        log.info("[EXTRACT] GrossTotalIncome (PART B): %.0f", val)
+        return val
+    val = _find_amount_on_same_line(text, *keywords, min_val=10000)
+    if val:
+        log.info("[EXTRACT] GrossTotalIncome (fallback): %.0f", val)
+        return val
+    return None
 
-    Actual OCR patterns seen:
-      'Total taxable income (9-11) 604280.00'
-    """
+
+def extract_taxable_income(text: str, part_b: str) -> Optional[float]:
+    """Extract total taxable income from PART B."""
     keywords = [
         r"Total\s+taxable\s+income",
         r"Net\s+taxable\s+income",
         r"Taxable\s+income",
     ]
-    val = _find_amount_on_same_line(text, *keywords)
+    val = _find_amount_on_same_line(part_b, *keywords, min_val=10000)
     if val:
-        log.debug("TaxableIncome (line match): %s", val)
+        log.info("[EXTRACT] TaxableIncome (PART B): %.0f", val)
         return val
-    val = _find_amount_near(text, *keywords, window=100)
+    val = _find_amount_near(part_b, *keywords, window=100, min_val=10000)
     if val:
-        log.debug("TaxableIncome (proximity): %s", val)
+        log.info("[EXTRACT] TaxableIncome (PART B proximity): %.0f", val)
+        return val
+    # Fallback
+    val = _find_amount_on_same_line(text, *keywords, min_val=10000)
+    if val:
+        log.info("[EXTRACT] TaxableIncome (fallback): %.0f", val)
         return val
     return None
 
 
-def extract_tds(text: str) -> Optional[float]:
-    """Extract TDS / tax payable.
+def extract_tds(text: str, part_a: str, part_b: str) -> Optional[float]:
+    """Extract TDS / tax deducted at source.
 
-    Actual OCR patterns seen:
-      'Tax payable (13+15+16-14) 34690.00'
-      'Net tax payable (17-18) 34690.00'
+    Strategy (priority order):
+    1. PART A table: "Total (Rs.)" row — last column is TDS amount
+    2. PART B: "Tax deducted from salary u/s 192(1)"
+    3. PART B: "Net tax payable" / "Tax payable"
+    4. PART A: "Total amount of TDS"
+    5. Fallback: full text
     """
-    keywords = [
+    # Strategy 1: PART A table total row
+    total_row_keywords = [
+        r"Total\s*\(?\s*Rs\.?\s*\)?\s*",
+    ]
+    amounts = _find_all_amounts_on_line(part_a, r"Total\s*\(?\s*Rs\.?\s*\)?")
+    if len(amounts) >= 2:
+        # In PART A table, the last column in "Total (Rs.)" row is the TDS
+        tds_val = amounts[-1]
+        if tds_val >= 100:
+            log.info("[EXTRACT] TDS (PART A table Total row, last amount): %.0f", tds_val)
+            return tds_val
+
+    # Strategy 2: Tax deducted from salary
+    keywords_precise = [
+        r"Tax\s+deducted\s+(?:from\s+salary\s+)?u/s\s+192",
+        r"Tax\s+deducted\s+at\s+source\s+u/s\s+192",
+    ]
+    val = _find_amount_on_same_line(part_b, *keywords_precise, min_val=100)
+    if val:
+        log.info("[EXTRACT] TDS (192 match in PART B): %.0f", val)
+        return val
+
+    # Strategy 3: Net tax payable / Tax payable
+    keywords_tax = [
         r"Net\s+tax\s+payable",
         r"Tax\s+payable\s*\(",
-        r"Total\s+tax\s+deducted\s+at\s+source",
-        r"Total\s+(?:amount\s+of\s+)?TDS",
-        r"Tax\s+deducted\s+at\s+source",
+        r"Tax\s+payable\b",
     ]
-    val = _find_amount_on_same_line(text, *keywords)
+    val = _find_amount_on_same_line(part_b, *keywords_tax, min_val=100)
     if val:
-        log.debug("TDS (line match): %s", val)
+        log.info("[EXTRACT] TDS (tax payable match): %.0f", val)
         return val
-    val = _find_amount_near(text, *keywords, window=100)
+
+    # Strategy 4: Total TDS
+    keywords_total = [
+        r"Total\s+(?:amount\s+of\s+)?(?:tax\s+)?(?:TDS|deducted\s+at\s+source)",
+    ]
+    val = _find_amount_on_same_line(part_a, *keywords_total, min_val=100)
     if val:
-        log.debug("TDS (proximity): %s", val)
+        log.info("[EXTRACT] TDS (Total TDS in PART A): %.0f", val)
         return val
+
+    # Strategy 5: Full text fallback
+    all_keywords = keywords_precise + keywords_tax + keywords_total
+    val = _find_amount_on_same_line(text, *all_keywords, min_val=100)
+    if val:
+        log.info("[EXTRACT] TDS (full text fallback): %.0f", val)
+        return val
+
     return None
 
 
-def extract_section80c(text: str) -> Optional[float]:
-    """Extract Section 80C deduction.
-
-    Actual OCR patterns seen:
-      'Total deduction under section 80C, 80CCC and 80CCD(1) 147305.00'
-    """
-    # Prefer the total deduction line
+def extract_section80c(text: str, part_b: str) -> Optional[float]:
+    """Extract Section 80C deduction from PART B."""
     val = _find_amount_on_same_line(
-        text,
+        part_b,
         r"Total\s+deduction\s+under\s+section\s+80C",
         r"Aggregate.*80C",
+        min_val=1000,
     )
     if val:
+        log.info("[EXTRACT] Section80C (PART B): %.0f", val)
         return val
-    # Fallback: 80C line
-    val = _find_amount_on_same_line(text, r"section\s+80C\b", r"\b80C\b")
+    val = _find_amount_on_same_line(text, r"section\s+80C\b", r"\b80C\b", min_val=1000)
+    if val:
+        log.info("[EXTRACT] Section80C (fallback): %.0f", val)
     return val
 
 
-def extract_section80d(text: str) -> Optional[float]:
-    """Extract Section 80D deduction (health insurance)."""
+def extract_section80d(text: str, part_b: str) -> Optional[float]:
+    """Extract Section 80D deduction (health insurance) from PART B."""
     val = _find_amount_on_same_line(
-        text,
+        part_b,
         r"health\s+insurance\s+premia\s+under\s+section\s+80D",
         r"section\s+80D\b",
         r"\b80D\b",
+        min_val=500,
     )
+    if val:
+        log.info("[EXTRACT] Section80D (PART B): %.0f", val)
+    return val
+
+
+def extract_tax_on_income(text: str, part_b: str) -> Optional[float]:
+    """Extract 'Tax on total income' — the pre-cess computed tax."""
+    keywords = [
+        r"Tax\s+on\s+total\s+income",
+        r"Income\s+tax\s+thereon",
+    ]
+    val = _find_amount_on_same_line(part_b, *keywords, min_val=100)
+    if val:
+        log.info("[EXTRACT] TaxOnIncome (PART B): %.0f", val)
+        return val
+    val = _find_amount_on_same_line(text, *keywords, min_val=100)
+    return val
+
+
+def extract_cess(text: str, part_b: str) -> Optional[float]:
+    """Extract Health & Education Cess."""
+    keywords = [
+        r"Health\s+and\s+[Ee]ducation\s+[Cc]ess",
+        r"education\s+cess",
+    ]
+    val = _find_amount_on_same_line(part_b, *keywords, min_val=10)
+    if val:
+        log.info("[EXTRACT] Cess (PART B): %.0f", val)
+        return val
+    val = _find_amount_on_same_line(text, *keywords, min_val=10)
     return val
 
 
@@ -301,31 +457,45 @@ def extract_fields(text: str) -> Dict[str, Any]:
     """Run all extractors and return a flat dict with exact validation keys.
 
     This is the PRIMARY extraction interface. Returns only non-None values.
+    Uses section-based parsing for higher accuracy.
     """
-    log.info("[NER-Regex] Running deterministic field extraction …")
+    log.info("[NER-Regex] Running section-aware field extraction …")
 
-    pan           = extract_pan(text)
-    tan           = extract_tan(text)
-    ay            = extract_assessment_year(text)
-    employer      = extract_employer_name(text)
-    employee      = extract_employee_name(text)
-    gross_salary  = extract_gross_salary(text)
-    taxable_income = extract_taxable_income(text)
-    tds           = extract_tds(text)
-    s80c          = extract_section80c(text)
-    s80d          = extract_section80d(text)
+    # Step 1: Section parsing
+    part_a, part_b, full = split_sections(text)
+
+    # Step 2: Extract from appropriate sections
+    pan            = extract_pan(full, part_a)
+    tan            = extract_tan(full, part_a)
+    ay             = extract_assessment_year(full, part_a)
+    employer       = extract_employer_name(full, part_a)
+    employee       = extract_employee_name(full)
+    gross_salary   = extract_gross_salary(full, part_b)
+    gross_total    = extract_gross_total_income(full, part_b)
+    taxable_income = extract_taxable_income(full, part_b)
+    tds            = extract_tds(full, part_a, part_b)
+    s80c           = extract_section80c(full, part_b)
+    s80d           = extract_section80d(full, part_b)
+    tax_on_income  = extract_tax_on_income(full, part_b)
+    cess           = extract_cess(full, part_b)
 
     fields: Dict[str, Any] = {}
-    if pan:            fields["PAN"]            = pan
-    if tan:            fields["TAN"]            = tan
-    if ay:             fields["AssessmentYear"] = ay
-    if employer:       fields["EmployerName"]   = employer
-    if employee:       fields["EmployeeName"]   = employee
-    if gross_salary:   fields["GrossSalary"]    = gross_salary
-    if taxable_income: fields["TaxableIncome"]  = taxable_income
-    if tds:            fields["TDS"]            = tds
-    if s80c:           fields["Section80C"]     = s80c
-    if s80d:           fields["Section80D"]     = s80d
+    if pan:            fields["PAN"]             = pan
+    if tan:            fields["TAN"]             = tan
+    if ay:             fields["AssessmentYear"]   = ay
+    if employer:       fields["EmployerName"]     = employer
+    if employee:       fields["EmployeeName"]     = employee
+    if gross_salary:   fields["GrossSalary"]      = gross_salary
+    if gross_total:    fields["GrossTotalIncome"]  = gross_total
+    if taxable_income: fields["TaxableIncome"]    = taxable_income
+    if tds:            fields["TDS"]              = tds
+    if s80c:           fields["Section80C"]       = s80c
+    if s80d:           fields["Section80D"]       = s80d
+    if tax_on_income:  fields["TaxOnIncome"]      = tax_on_income
+    if cess:           fields["Cess"]             = cess
+
+    # Step 3: Validation guards
+    _validate_extraction(fields)
 
     log.info(
         "[NER-Regex] Extracted %d fields: %s",
@@ -335,16 +505,30 @@ def extract_fields(text: str) -> Dict[str, Any]:
     return fields
 
 
+def _validate_extraction(fields: Dict[str, Any]) -> None:
+    """Post-extraction sanity checks."""
+    gross = fields.get("GrossSalary")
+    taxable = fields.get("TaxableIncome")
+
+    if gross and taxable and taxable > gross:
+        log.warning(
+            "[NER-Regex] ANOMALY: TaxableIncome (%.0f) > GrossSalary (%.0f) — "
+            "possible extraction error. Swapping to use GrossTotalIncome if available.",
+            taxable, gross,
+        )
+        # Try to resolve: if GrossTotalIncome is present and between them, use it
+        gti = fields.get("GrossTotalIncome")
+        if gti and gti >= taxable:
+            log.info("[NER-Regex] Resolved: using GrossTotalIncome (%.0f) as GrossSalary", gti)
+            fields["GrossSalary"] = gti
+
+
 # ---------------------------------------------------------------------------
 # Legacy list-based interface (for NERService merge)
 # ---------------------------------------------------------------------------
 
 def extract_all(text: str) -> List[Dict[str, Any]]:
-    """Return entities as a list of {label, value, confidence, source} dicts.
-
-    Used by NERService for merge with transformer output.
-    Each entry uses the EXACT field names required by validation.
-    """
+    """Return entities as a list of {label, value, confidence, source} dicts."""
     fields = extract_fields(text)
     entities: List[Dict[str, Any]] = []
 

@@ -313,21 +313,68 @@ async def process_pipeline(file: UploadFile = File(...)):
     tds        = _to_float(entity_map.get("TDS", 0))
     regime     = settings.DEFAULT_TAX_REGIME
 
-    log.info("[Process] Tax inputs — gross=%.0f taxable=%.0f deductions=%.0f tds=%.0f regime=%s",
-             gross, taxable, deductions, tds, regime)
+    # Guard: do NOT compute tax on incomplete data
+    missing_fields = []
+    if gross <= 0:
+        missing_fields.append("GrossSalary")
+    if taxable <= 0:
+        missing_fields.append("TaxableIncome")
+    if tds <= 0:
+        missing_fields.append("TDS")
 
-    try:
-        tax_result = compute_tax({
-            "GrossSalary": gross,
-            "Deductions":  deductions,
-            "TDS":         tds,
-            "Regime":      regime,
-        })
-        log.info("[Process] Tax done — total_tax=%.2f refund=%.2f",
-                 tax_result.get("total_tax", 0), tax_result.get("refund_or_payable", 0))
-    except Exception as exc:
-        log.error("[Process] Tax computation failed: %s", exc)
-        tax_result = None
+    tax_result = None
+
+    if missing_fields:
+        log.warning(
+            "[Process] TAX SKIPPED — missing critical fields: %s. "
+            "Cannot compute reliable tax on incomplete extraction.",
+            missing_fields,
+        )
+    else:
+        log.info("[Process] Tax inputs — gross=%.0f taxable=%.0f deductions=%.0f tds=%.0f regime=%s",
+                 gross, taxable, deductions, tds, regime)
+
+        # Sanity check: gross >= taxable
+        if taxable > gross:
+            log.warning(
+                "[Process] ANOMALY: taxable (%.0f) > gross (%.0f) — "
+                "using taxable as gross for safety.",
+                taxable, gross,
+            )
+            gross = taxable
+            deductions = 0.0
+
+        try:
+            tax_result = compute_tax({
+                "GrossSalary": gross,
+                "Deductions":  deductions,
+                "TDS":         tds,
+                "Regime":      regime,
+            })
+
+            # If the document itself has "TaxOnIncome" extracted, compare
+            doc_tax = _to_float(entity_map.get("TaxOnIncome", 0))
+            if doc_tax > 0:
+                computed = tax_result.get("base_tax", 0)
+                diff = abs(computed - doc_tax)
+                if diff > 10:
+                    log.warning(
+                        "[Process] TAX CROSS-CHECK: computed base_tax (%.0f) != "
+                        "document TaxOnIncome (%.0f), diff=%.0f. "
+                        "Document value may be more accurate.",
+                        computed, doc_tax, diff,
+                    )
+                else:
+                    log.info(
+                        "[Process] TAX CROSS-CHECK PASSED: computed=%.0f vs document=%.0f",
+                        computed, doc_tax,
+                    )
+
+            log.info("[Process] Tax done — total_tax=%.2f refund=%.2f",
+                     tax_result.get("total_tax", 0), tax_result.get("refund_or_payable", 0))
+        except Exception as exc:
+            log.error("[Process] Tax computation failed: %s", exc)
+            tax_result = None
 
     if tax_result:
         try:
@@ -345,22 +392,25 @@ async def process_pipeline(file: UploadFile = File(...)):
 
 
 # ====================================================================== #
-# 7. POST /generate-report   (PDF-like downloadable report)
+# 7. POST /generate-report   (PDF via reportlab)
 # ====================================================================== #
 
 from pydantic import BaseModel as _BM
 from fastapi.responses import StreamingResponse
 import io
 
+
 class _ReportEntity(_BM):
     label: str
     value: str
     confidence: float
 
+
 class _ReportValidation(_BM):
     status: str
     score: int
     issues: list = []
+
 
 class _ReportRequest(_BM):
     entities: list[_ReportEntity]
@@ -368,73 +418,203 @@ class _ReportRequest(_BM):
     tax: dict
 
 
-@router.post("/generate-report", tags=["report"])
-async def generate_report(body: _ReportRequest):
-    """Generate a downloadable tax report as a text file (PDF placeholder).
+def _build_pdf(body: _ReportRequest) -> bytes:
+    """Build a valid PDF using reportlab SimpleDocTemplate."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    )
 
-    A production system would use reportlab or weasyprint;
-    this generates a clean .txt report for demo purposes.
-    """
-    lines: list[str] = []
-    lines.append("=" * 60)
-    lines.append("  TAX BUDDY — AI Tax Filing Report")
-    lines.append("=" * 60)
-    lines.append("")
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+        leftMargin=15 * mm,
+        rightMargin=15 * mm,
+    )
 
-    # Extracted data
-    lines.append("EXTRACTED DATA")
-    lines.append("-" * 40)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Title"],
+        fontSize=18,
+        spaceAfter=6 * mm,
+        textColor=colors.HexColor("#1a1a2e"),
+    )
+    heading_style = ParagraphStyle(
+        "SectionHeading",
+        parent=styles["Heading2"],
+        fontSize=13,
+        spaceBefore=6 * mm,
+        spaceAfter=3 * mm,
+        textColor=colors.HexColor("#2d2d44"),
+    )
+    body_style = styles["BodyText"]
+    small_style = ParagraphStyle(
+        "Small",
+        parent=styles["BodyText"],
+        fontSize=8,
+        textColor=colors.grey,
+    )
+
+    elements = []
+
+    # Title
+    elements.append(Paragraph("Tax Buddy — Tax Summary Report", title_style))
+    elements.append(Spacer(1, 4 * mm))
+
+    # -- Extracted Data --
+    elements.append(Paragraph("Extracted Data", heading_style))
+    data_rows = [["Field", "Value", "Confidence"]]
     for ent in body.entities:
-        conf_pct = f"{ent.confidence * 100:.0f}%"
-        lines.append(f"  {ent.label:20s} {ent.value:>20s}  ({conf_pct})")
-    lines.append("")
+        conf_str = f"{ent.confidence * 100:.0f}%"
+        data_rows.append([ent.label, ent.value, conf_str])
 
-    # Validation
-    lines.append("VALIDATION")
-    lines.append("-" * 40)
-    lines.append(f"  Status: {body.validation.status.upper()}")
-    lines.append(f"  Score:  {body.validation.score}/100")
+    if len(data_rows) > 1:
+        col_widths = [50 * mm, 70 * mm, 30 * mm]
+        t = Table(data_rows, colWidths=col_widths, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8e8f0")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(t)
+    else:
+        elements.append(Paragraph("No data extracted.", body_style))
+
+    elements.append(Spacer(1, 4 * mm))
+
+    # -- Validation --
+    elements.append(Paragraph("Validation", heading_style))
+    elements.append(Paragraph(
+        f"Status: <b>{body.validation.status.upper()}</b> &nbsp;&nbsp; "
+        f"Score: <b>{body.validation.score}/100</b>",
+        body_style,
+    ))
     if body.validation.issues:
         for iss in body.validation.issues:
             if isinstance(iss, dict):
-                lines.append(f"  ⚠ [{iss.get('severity', '?')}] {iss.get('message', '')}")
-    lines.append("")
+                msg = iss.get("message", "")
+                sev = iss.get("severity", "?")
+                elements.append(Paragraph(f"• [{sev}] {msg}", body_style))
 
-    # Tax
-    lines.append("TAX COMPUTATION")
-    lines.append("-" * 40)
+    elements.append(Spacer(1, 4 * mm))
+
+    # -- Tax Computation --
+    elements.append(Paragraph("Tax Computation", heading_style))
     tax = body.tax
-    for key in ["regime", "gross_income", "deductions", "taxable_income", "base_tax", "rebate", "surcharge", "cess", "total_tax", "tds_paid", "refund_or_payable"]:
+    tax_keys = [
+        ("Regime", "regime"),
+        ("Gross Income", "gross_income"),
+        ("Deductions", "deductions"),
+        ("Taxable Income", "taxable_income"),
+        ("Base Tax", "base_tax"),
+        ("Rebate (87A)", "rebate"),
+        ("Surcharge", "surcharge"),
+        ("Cess (4%)", "cess"),
+        ("Total Tax", "total_tax"),
+        ("TDS Paid", "tds_paid"),
+        ("Refund / Payable", "refund_or_payable"),
+    ]
+    tax_rows = [["Item", "Amount"]]
+    for display, key in tax_keys:
         val = tax.get(key, "N/A")
         if isinstance(val, (int, float)):
-            lines.append(f"  {key:25s} ₹{val:>12,.2f}")
+            val_str = f"₹{val:,.2f}"
         else:
-            lines.append(f"  {key:25s} {val}")
-    lines.append("")
+            val_str = str(val).capitalize()
+        tax_rows.append([display, val_str])
 
-    # Slab breakdown
+    t2 = Table(tax_rows, colWidths=[60 * mm, 50 * mm], repeatRows=1)
+    t2.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8e8f0")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(t2)
+
+    # -- Slab Breakdown --
     breakdown = tax.get("breakdown", [])
     if breakdown:
-        lines.append("SLAB BREAKDOWN")
-        lines.append("-" * 40)
+        elements.append(Spacer(1, 4 * mm))
+        elements.append(Paragraph("Slab Breakdown", heading_style))
+        slab_rows = [["Range", "Rate", "Taxable Amount", "Tax"]]
         for slab in breakdown:
             if isinstance(slab, dict):
-                lines.append(f"  {slab.get('range', '?'):15s} @{slab.get('rate', 0) * 100:5.1f}%  →  ₹{slab.get('tax', 0):>10,.2f}")
-        lines.append("")
+                slab_rows.append([
+                    slab.get("range", "?"),
+                    f"{slab.get('rate', 0) * 100:.0f}%",
+                    f"₹{slab.get('taxable_amount', 0):,.2f}",
+                    f"₹{slab.get('tax', 0):,.2f}",
+                ])
+        t3 = Table(slab_rows, colWidths=[35 * mm, 20 * mm, 40 * mm, 35 * mm], repeatRows=1)
+        t3.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8e8f0")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(t3)
 
-    lines.append("=" * 60)
-    lines.append("  Generated by Tax Buddy · AI Tax Filing Assistant")
-    lines.append("  For informational purposes only.")
-    lines.append("=" * 60)
+    # -- Footer --
+    elements.append(Spacer(1, 10 * mm))
+    elements.append(Paragraph(
+        "Generated by Tax Buddy · AI Tax Filing Assistant. "
+        "For informational purposes only.",
+        small_style,
+    ))
 
-    content = "\n".join(lines)
-    buf = io.BytesIO(content.encode("utf-8"))
+    doc.build(elements)
+    return buf.getvalue()
+
+
+@router.post("/generate-report", tags=["report"])
+async def generate_report(body: _ReportRequest):
+    """Generate a valid PDF tax report using reportlab."""
+    # Guard: don't generate if no data
+    if not body.entities and not body.tax:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot generate report: no extracted data or tax result available.",
+        )
+
+    log.info("[Report] Generating PDF — %d entities, tax=%s",
+             len(body.entities), "present" if body.tax else "absent")
+
+    try:
+        pdf_bytes = _build_pdf(body)
+    except Exception as exc:
+        log.error("[Report] PDF generation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
+
+    buf = io.BytesIO(pdf_bytes)
     buf.seek(0)
+
+    log.info("[Report] PDF generated — %d bytes", len(pdf_bytes))
 
     return StreamingResponse(
         buf,
-        media_type="text/plain",
-        headers={"Content-Disposition": "attachment; filename=tax-buddy-report.txt"},
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=tax-buddy-report.pdf"},
     )
 
 
@@ -445,3 +625,4 @@ async def generate_report(body: _ReportRequest):
 @router.get("/system/health", tags=["health"])
 async def health_check():
     return {"status": "ok", "service": settings.PROJECT_NAME}
+
