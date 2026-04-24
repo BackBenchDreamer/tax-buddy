@@ -18,6 +18,7 @@ Design choices
 
 import json
 import logging
+import pathlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, Optional
@@ -28,6 +29,27 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from app.core.config import settings
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Ensure database directory exists
+# ---------------------------------------------------------------------------
+
+def _ensure_db_dir() -> None:
+    """Create database directory if it doesn't exist (for SQLite)."""
+    db_url = settings.DATABASE_URL
+    if db_url.startswith("sqlite:///"):
+        # Extract path from sqlite:///path format
+        db_path = db_url.replace("sqlite:///", "")
+        if db_path.startswith("."):
+            # Relative path like ./data/taxbuddy.db
+            import os
+            db_path = os.path.abspath(db_path)
+        db_dir = pathlib.Path(db_path).parent
+        db_dir.mkdir(parents=True, exist_ok=True)
+        log.info("[DB] Ensured database directory exists: %s", db_dir)
+
+
+_ensure_db_dir()
 
 # ---------------------------------------------------------------------------
 # Engine
