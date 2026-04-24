@@ -150,9 +150,15 @@ class OCRService:
     # ------------------------------------------------------------------
     # Public entry point — all pages
     # ------------------------------------------------------------------
-    def extract(self, input_path: str) -> Dict[str, Any]:
-        """Run OCR on every page; return concatenated text + per-block confidence."""
-        log.info("[OCR] Starting extraction: %s", input_path)
+    def extract(self, input_path: str, max_pages: int = 2) -> Dict[str, Any]:
+        """
+        Run OCR on first N pages max; return concatenated text + per-block confidence.
+
+        Args:
+            input_path: Path to PDF or image
+            max_pages: Maximum pages to process (default 2 for performance)
+        """
+        log.info("[OCR] Starting extraction: %s (max_pages=%d)", input_path, max_pages)
         all_blocks: List[Dict[str, Any]] = []
 
         try:
@@ -161,7 +167,12 @@ class OCRService:
             log.error("[OCR] Failed to load pages: %s", exc)
             raise
 
-        log.info("[OCR] %d page(s) loaded", len(pages))
+        # PERFORMANCE: Limit page processing to first N pages
+        if len(pages) > max_pages:
+            log.warning("[OCR] Document has %d pages, limiting to first %d for performance", len(pages), max_pages)
+            pages = pages[:max_pages]
+
+        log.info("[OCR] %d page(s) to process", len(pages))
 
         for idx, page_bgr in enumerate(pages):
             page_num = idx + 1

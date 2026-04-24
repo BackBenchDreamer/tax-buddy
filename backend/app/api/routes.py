@@ -241,63 +241,84 @@ async def generate_itr(body: ITRRequest):
 async def process_pipeline(file: UploadFile = File(...)):
     """
     Full pipeline in one request:
-      Upload → OCR → NER → Validation → Tax → Persist
+      Upload → OCR → NER → Validation → Tax
+
+    PERFORMANCE CRITICAL:
+    - <5s total
+    - NO blocking I/O in main response path
+    - Partial results on any error
     """
     import asyncio
+    import time
 
-    print("[DEBUG] START /process endpoint")
+    print("[PERF] START /process endpoint")
+    start_total = time.time()
 
     async def run_pipeline_with_timeout():
         try:
             # ── Upload ────────────────────────────────────────────────────────────
-            print("[DEBUG] START UPLOAD")
+            print("[PERF] UPLOAD starting")
+            start_time = time.time()
             upload_resp = await upload_file(file)
             file_path = upload_resp.file_path
             file_id   = upload_resp.file_id
+            upload_elapsed = time.time() - start_time
+            print(f"[PERF] UPLOAD completed in {upload_elapsed:.3f}s")
             log.info("[Process] File saved — id=%s", file_id)
-            print("[DEBUG] END UPLOAD")
 
             # ── OCR ───────────────────────────────────────────────────────────────
-            print("[DEBUG] START OCR")
-            log.info("[Process] OCR starting …")
+            print("[PERF] OCR starting")
+            start_time = time.time()
+            raw_text = ""
             try:
                 ocr_result = _get_ocr().extract(file_path)
                 raw_text: str = ocr_result.get("text", "")
-                log.info("[Process] OCR complete — %d chars, avg_conf=%.3f",
-                         len(raw_text), ocr_result.get("average_confidence", 0))
+                ocr_elapsed = time.time() - start_time
+                log.info("[Process] OCR complete — %d chars, avg_conf=%.3f, time=%.3fs",
+                         len(raw_text), ocr_result.get("average_confidence", 0), ocr_elapsed)
+                print(f"[PERF] OCR completed in {ocr_elapsed:.3f}s")
+
+                if ocr_elapsed > 3.0:
+                    log.warning("[PERF] OCR took >3s (%.3fs) — consider optimization or pagination", ocr_elapsed)
+
             except Exception as exc:
+                ocr_elapsed = time.time() - start_time
+                print(f"[PERF] OCR FAILED after {ocr_elapsed:.3f}s: {exc}")
                 log.error("[Process] OCR failed: %s", exc)
-                raise HTTPException(status_code=500, detail=str(_structured_error("OCR", str(exc))))
-            print("[DEBUG] END OCR")
+                # Return partial response on OCR failure
+                return ProcessResponse(
+                    file_id=file_id,
+                    text="",
+                    entities=[],
+                    validation={"status": "failed", "score": 0, "issues": [{"type": "OCR_FAILED", "message": str(exc), "severity": "high", "field": ""}]},
+                    tax=None,
+                )
 
             # ── NER ───────────────────────────────────────────────────────────────
-            print("[DEBUG] START NER")
-            log.info("[Process] NER starting …")
+            print("[PERF] NER starting")
+            start_time = time.time()
             try:
                 ner_result   = _get_ner().extract(raw_text)
                 entities     = ner_result.get("entities", [])
                 entity_map: Dict[str, Any] = ner_result.get("entity_map") or {}
-                log.info("[Process] NER complete — fields: %s", list(entity_map.keys()))
+                ner_elapsed = time.time() - start_time
+                log.info("[Process] NER complete — fields: %s, time=%.3fs", list(entity_map.keys()), ner_elapsed)
+                print(f"[PERF] NER completed in {ner_elapsed:.3f}s")
             except Exception as exc:
-                log.warning("[Process] NERService failed (%s) — falling back to regex-only", exc)
+                ner_elapsed = time.time() - start_time
+                print(f"[PERF] NER FAILED after {ner_elapsed:.3f}s: {exc}")
+                log.warning("[Process] NERService failed (%s) — using regex fallback", exc)
                 entity_map = regex_extract_fields(raw_text)
                 entities   = [
                     {"label": k, "value": str(v), "confidence": 0.9}
                     for k, v in entity_map.items()
                 ]
-            print("[DEBUG] END NER")
 
             log.debug("[Process] entity_map: %s", entity_map)
 
-            # Persist extracted data
-            try:
-                save_extracted_data(file_id, entity_map)
-            except Exception as exc:
-                log.warning("[Process] Failed to persist extracted data: %s", exc)
-
             # ── Validation ────────────────────────────────────────────────────────
-            print("[DEBUG] START VALIDATION")
-            log.info("[Process] Running validation …")
+            print("[PERF] VALIDATION starting")
+            start_time = time.time()
             form26as_data = {
                 "PAN":            entity_map.get("PAN", ""),
                 "TAN":            entity_map.get("TAN", ""),
@@ -306,20 +327,19 @@ async def process_pipeline(file: UploadFile = File(...)):
             }
             try:
                 val_result_dict = run_validation(entity_map, form26as_data)
-                log.info("[Process] Validation — status=%s score=%s issues=%d",
-                         val_result_dict.get("status"), val_result_dict.get("score"), len(val_result_dict.get("issues", [])))
+                val_elapsed = time.time() - start_time
+                log.info("[Process] Validation — status=%s score=%s issues=%d, time=%.3fs",
+                         val_result_dict.get("status"), val_result_dict.get("score"), len(val_result_dict.get("issues", [])), val_elapsed)
+                print(f"[PERF] VALIDATION completed in {val_elapsed:.3f}s")
             except Exception as exc:
+                val_elapsed = time.time() - start_time
+                print(f"[PERF] VALIDATION FAILED after {val_elapsed:.3f}s: {exc}")
                 log.error("[Process] Validation stage failed: %s", exc)
                 val_result_dict = {"status": "error", "score": 0, "issues": []}
 
-            try:
-                save_validation_result(file_id, val_result_dict)
-            except Exception as exc:
-                log.warning("[Process] Failed to persist validation result: %s", exc)
-            print("[DEBUG] END VALIDATION")
-
             # ── Tax ───────────────────────────────────────────────────────────────
-            print("[DEBUG] START TAX")
+            print("[PERF] TAX starting")
+            start_time = time.time()
             log.info("[Process] Computing tax …")
             gross      = _to_float(entity_map.get("GrossSalary", 0))
             taxable    = _to_float(entity_map.get("TaxableIncome", 0))
@@ -358,16 +378,13 @@ async def process_pipeline(file: UploadFile = File(...)):
                     gross = taxable
                     deductions = 0.0
 
-                print("[DEBUG] About to call compute_tax()")
                 try:
-                    print("[DEBUG] Inside tax computation try block")
                     tax_result = compute_tax({
                         "GrossSalary": gross,
                         "Deductions":  deductions,
                         "TDS":         tds,
                         "Regime":      regime,
                     })
-                    print(f"[DEBUG] compute_tax returned: type={type(tax_result)}")
 
                     # If the document itself has "TaxOnIncome" extracted, compare
                     doc_tax = _to_float(entity_map.get("TaxOnIncome", 0))
@@ -391,44 +408,27 @@ async def process_pipeline(file: UploadFile = File(...)):
                              tax_result.get("total_tax", 0), tax_result.get("refund_or_payable", 0))
                 except Exception as exc:
                     print(f"[ERROR TAX] {exc}")
-                    import traceback
-                    print(f"[ERROR TRACEBACK] {traceback.format_exc()}")
                     log.error("[Process] Tax computation failed: %s", exc)
                     tax_result = None
-            print("[DEBUG] END TAX")
 
-            if tax_result:
-                try:
-                    save_tax_result(file_id, tax_result, regime=regime)
-                except Exception as exc:
-                    log.warning("[Process] Failed to persist tax result: %s", exc)
+            tax_elapsed = time.time() - start_time
+            print(f"[PERF] TAX completed in {tax_elapsed:.3f}s")
 
-            # Build response with proper error handling
-            print("[DEBUG] BUILDING RESPONSE")
-            try:
-                print(f"[DEBUG] response params: file_id={file_id}, entities count={len(entities)}, val_result={type(val_result_dict).__name__}, tax_result={type(tax_result).__name__ if tax_result else 'None'}")
-                response = ProcessResponse(
-                    file_id=file_id,
-                    text=raw_text,
-                    entities=entities,
-                    validation=val_result_dict,
-                    tax=tax_result,
-                )
-                print("[DEBUG] RETURNING RESPONSE")
-                return response
-            except Exception as exc:
-                print(f"[ERROR] Failed to create ProcessResponse: {exc}")
-                import traceback
-                print(f"[ERROR TRACEBACK] {traceback.format_exc()}")
-                log.error("[Process] Failed to create response: %s", exc)
-                # Return minimal valid response
-                return ProcessResponse(
-                    file_id=file_id,
-                    text=raw_text,
-                    entities=entities,
-                    validation={"status": "error", "score": 0, "issues": []},
-                    tax=None,
-                )
+            # ── BUILD RESPONSE (NO BLOCKING I/O) ──────────────────────────────────
+            print("[PERF] BUILDING RESPONSE")
+            response = ProcessResponse(
+                file_id=file_id,
+                text=raw_text,
+                entities=entities,
+                validation=val_result_dict,
+                tax=tax_result,
+            )
+
+            total_elapsed = time.time() - start_total
+            print(f"[PERF] FINAL RESPONSE READY in {total_elapsed:.3f}s total")
+            log.info("[Process] Pipeline complete in %.3fs", total_elapsed)
+            return response
+
         except HTTPException:
             raise
         except Exception as exc:
@@ -440,12 +440,12 @@ async def process_pipeline(file: UploadFile = File(...)):
 
     # Run with timeout
     try:
-        result = await asyncio.wait_for(run_pipeline_with_timeout(), timeout=120.0)
+        result = await asyncio.wait_for(run_pipeline_with_timeout(), timeout=10.0)
         return result
     except asyncio.TimeoutError:
-        log.error("[Process] Pipeline timeout exceeded 120 seconds")
+        log.error("[Process] Pipeline timeout exceeded 10 seconds")
         print("[ERROR] Pipeline timeout!")
-        raise HTTPException(status_code=504, detail="Pipeline processing timed out after 120 seconds")
+        raise HTTPException(status_code=504, detail="Pipeline processing timed out after 10 seconds")
     except Exception as exc:
         if isinstance(exc, HTTPException):
             raise
@@ -456,7 +456,56 @@ async def process_pipeline(file: UploadFile = File(...)):
 
 
 # ====================================================================== #
-# 7. POST /generate-report   (PDF via reportlab)
+# POST /persist — Background persistence (optional, async-safe)
+# ====================================================================== #
+
+@router.post("/persist", tags=["persistence"])
+async def persist_results(
+    file_id: str,
+    entity_map: Dict[str, Any] = {},
+    validation_result: Dict[str, Any] = {},
+    tax_result: Dict[str, Any] = None,
+):
+    """
+    OPTIONAL background endpoint for deferred persistence.
+
+    /process returns results instantly.
+    Client can optionally call /persist to save to database.
+
+    Returns immediately — actual writes happen async.
+    """
+    print(f"[PERSIST] Async save requested for file_id={file_id}")
+
+    # Schedule background saves (fire and forget)
+    async def background_persist():
+        try:
+            if entity_map:
+                save_extracted_data(file_id, entity_map)
+                print(f"[PERSIST] Saved extracted data")
+        except Exception as exc:
+            log.warning("[Persist] Failed to save extracted data: %s", exc)
+
+        try:
+            if validation_result:
+                save_validation_result(file_id, validation_result)
+                print(f"[PERSIST] Saved validation result")
+        except Exception as exc:
+            log.warning("[Persist] Failed to save validation result: %s", exc)
+
+        try:
+            if tax_result:
+                save_tax_result(file_id, tax_result, regime=tax_result.get("regime", "old"))
+                print(f"[PERSIST] Saved tax result")
+        except Exception as exc:
+            log.warning("[Persist] Failed to save tax result: %s", exc)
+
+    # Fire and forget
+    import asyncio
+    asyncio.create_task(background_persist())
+
+    return {"status": "queued", "file_id": file_id}
+
+
 # ====================================================================== #
 
 from pydantic import BaseModel as _BM
