@@ -243,152 +243,216 @@ async def process_pipeline(file: UploadFile = File(...)):
     Full pipeline in one request:
       Upload → OCR → NER → Validation → Tax → Persist
     """
+    import asyncio
 
-    # ── Upload ────────────────────────────────────────────────────────────
-    upload_resp = await upload_file(file)
-    file_path = upload_resp.file_path
-    file_id   = upload_resp.file_id
-    log.info("[Process] File saved — id=%s", file_id)
+    print("[DEBUG] START /process endpoint")
 
-    # ── OCR ───────────────────────────────────────────────────────────────
-    log.info("[Process] OCR starting …")
-    try:
-        ocr_result = _get_ocr().extract(file_path)
-        raw_text: str = ocr_result.get("text", "")
-        log.info("[Process] OCR complete — %d chars, avg_conf=%.3f",
-                 len(raw_text), ocr_result.get("average_confidence", 0))
-    except Exception as exc:
-        log.error("[Process] OCR failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(_structured_error("OCR", str(exc))))
-
-    # ── NER ───────────────────────────────────────────────────────────────
-    log.info("[Process] NER starting …")
-    try:
-        ner_result   = _get_ner().extract(raw_text)
-        entities     = ner_result.get("entities", [])
-        entity_map: Dict[str, Any] = ner_result.get("entity_map") or {}
-        log.info("[Process] NER complete — fields: %s", list(entity_map.keys()))
-    except Exception as exc:
-        log.warning("[Process] NERService failed (%s) — falling back to regex-only", exc)
-        entity_map = regex_extract_fields(raw_text)
-        entities   = [
-            {"label": k, "value": str(v), "confidence": 0.9}
-            for k, v in entity_map.items()
-        ]
-
-    log.debug("[Process] entity_map: %s", entity_map)
-
-    # Persist extracted data
-    try:
-        save_extracted_data(file_id, entity_map)
-    except Exception as exc:
-        log.warning("[Process] Failed to persist extracted data: %s", exc)
-
-    # ── Validation ────────────────────────────────────────────────────────
-    log.info("[Process] Running validation …")
-    form26as_data = {
-        "PAN":            entity_map.get("PAN", ""),
-        "TAN":            entity_map.get("TAN", ""),
-        "TDS":            entity_map.get("TDS", 0),
-        "AssessmentYear": entity_map.get("AssessmentYear", ""),
-    }
-    try:
-        val_result = run_validation(entity_map, form26as_data)
-        log.info("[Process] Validation — status=%s score=%s issues=%d",
-                 val_result.get("status"), val_result.get("score"), len(val_result.get("issues", [])))
-    except Exception as exc:
-        log.error("[Process] Validation stage failed: %s", exc)
-        val_result = {"status": "error", "score": 0, "issues": [], "error": str(exc)}
-
-    try:
-        save_validation_result(file_id, val_result)
-    except Exception as exc:
-        log.warning("[Process] Failed to persist validation result: %s", exc)
-
-    # ── Tax ───────────────────────────────────────────────────────────────
-    log.info("[Process] Computing tax …")
-    gross      = _to_float(entity_map.get("GrossSalary", 0))
-    taxable    = _to_float(entity_map.get("TaxableIncome", 0))
-    deductions = gross - taxable if gross and taxable else 0.0
-    tds        = _to_float(entity_map.get("TDS", 0))
-    regime     = settings.DEFAULT_TAX_REGIME
-
-    # Guard: do NOT compute tax on incomplete data
-    missing_fields = []
-    if gross <= 0:
-        missing_fields.append("GrossSalary")
-    if taxable <= 0:
-        missing_fields.append("TaxableIncome")
-    if tds <= 0:
-        missing_fields.append("TDS")
-
-    tax_result = None
-
-    if missing_fields:
-        log.warning(
-            "[Process] TAX SKIPPED — missing critical fields: %s. "
-            "Cannot compute reliable tax on incomplete extraction.",
-            missing_fields,
-        )
-    else:
-        log.info("[Process] Tax inputs — gross=%.0f taxable=%.0f deductions=%.0f tds=%.0f regime=%s",
-                 gross, taxable, deductions, tds, regime)
-
-        # Sanity check: gross >= taxable
-        if taxable > gross:
-            log.warning(
-                "[Process] ANOMALY: taxable (%.0f) > gross (%.0f) — "
-                "using taxable as gross for safety.",
-                taxable, gross,
-            )
-            gross = taxable
-            deductions = 0.0
-
+    async def run_pipeline_with_timeout():
         try:
-            tax_result = compute_tax({
-                "GrossSalary": gross,
-                "Deductions":  deductions,
-                "TDS":         tds,
-                "Regime":      regime,
-            })
+            # ── Upload ────────────────────────────────────────────────────────────
+            print("[DEBUG] START UPLOAD")
+            upload_resp = await upload_file(file)
+            file_path = upload_resp.file_path
+            file_id   = upload_resp.file_id
+            log.info("[Process] File saved — id=%s", file_id)
+            print("[DEBUG] END UPLOAD")
 
-            # If the document itself has "TaxOnIncome" extracted, compare
-            doc_tax = _to_float(entity_map.get("TaxOnIncome", 0))
-            if doc_tax > 0:
-                computed = tax_result.get("base_tax", 0)
-                diff = abs(computed - doc_tax)
-                if diff > 10:
-                    log.warning(
-                        "[Process] TAX CROSS-CHECK: computed base_tax (%.0f) != "
-                        "document TaxOnIncome (%.0f), diff=%.0f. "
-                        "Document value may be more accurate.",
-                        computed, doc_tax, diff,
-                    )
-                else:
-                    log.info(
-                        "[Process] TAX CROSS-CHECK PASSED: computed=%.0f vs document=%.0f",
-                        computed, doc_tax,
-                    )
+            # ── OCR ───────────────────────────────────────────────────────────────
+            print("[DEBUG] START OCR")
+            log.info("[Process] OCR starting …")
+            try:
+                ocr_result = _get_ocr().extract(file_path)
+                raw_text: str = ocr_result.get("text", "")
+                log.info("[Process] OCR complete — %d chars, avg_conf=%.3f",
+                         len(raw_text), ocr_result.get("average_confidence", 0))
+            except Exception as exc:
+                log.error("[Process] OCR failed: %s", exc)
+                raise HTTPException(status_code=500, detail=str(_structured_error("OCR", str(exc))))
+            print("[DEBUG] END OCR")
 
-            log.info("[Process] Tax done — total_tax=%.2f refund=%.2f",
-                     tax_result.get("total_tax", 0), tax_result.get("refund_or_payable", 0))
-        except Exception as exc:
-            log.error("[Process] Tax computation failed: %s", exc)
+            # ── NER ───────────────────────────────────────────────────────────────
+            print("[DEBUG] START NER")
+            log.info("[Process] NER starting …")
+            try:
+                ner_result   = _get_ner().extract(raw_text)
+                entities     = ner_result.get("entities", [])
+                entity_map: Dict[str, Any] = ner_result.get("entity_map") or {}
+                log.info("[Process] NER complete — fields: %s", list(entity_map.keys()))
+            except Exception as exc:
+                log.warning("[Process] NERService failed (%s) — falling back to regex-only", exc)
+                entity_map = regex_extract_fields(raw_text)
+                entities   = [
+                    {"label": k, "value": str(v), "confidence": 0.9}
+                    for k, v in entity_map.items()
+                ]
+            print("[DEBUG] END NER")
+
+            log.debug("[Process] entity_map: %s", entity_map)
+
+            # Persist extracted data
+            try:
+                save_extracted_data(file_id, entity_map)
+            except Exception as exc:
+                log.warning("[Process] Failed to persist extracted data: %s", exc)
+
+            # ── Validation ────────────────────────────────────────────────────────
+            print("[DEBUG] START VALIDATION")
+            log.info("[Process] Running validation …")
+            form26as_data = {
+                "PAN":            entity_map.get("PAN", ""),
+                "TAN":            entity_map.get("TAN", ""),
+                "TDS":            entity_map.get("TDS", 0),
+                "AssessmentYear": entity_map.get("AssessmentYear", ""),
+            }
+            try:
+                val_result_dict = run_validation(entity_map, form26as_data)
+                log.info("[Process] Validation — status=%s score=%s issues=%d",
+                         val_result_dict.get("status"), val_result_dict.get("score"), len(val_result_dict.get("issues", [])))
+            except Exception as exc:
+                log.error("[Process] Validation stage failed: %s", exc)
+                val_result_dict = {"status": "error", "score": 0, "issues": []}
+
+            try:
+                save_validation_result(file_id, val_result_dict)
+            except Exception as exc:
+                log.warning("[Process] Failed to persist validation result: %s", exc)
+            print("[DEBUG] END VALIDATION")
+
+            # ── Tax ───────────────────────────────────────────────────────────────
+            print("[DEBUG] START TAX")
+            log.info("[Process] Computing tax …")
+            gross      = _to_float(entity_map.get("GrossSalary", 0))
+            taxable    = _to_float(entity_map.get("TaxableIncome", 0))
+            deductions = gross - taxable if gross and taxable else 0.0
+            tds        = _to_float(entity_map.get("TDS", 0))
+            regime     = settings.DEFAULT_TAX_REGIME
+
+            # Guard: do NOT compute tax on incomplete data
+            missing_fields = []
+            if gross <= 0:
+                missing_fields.append("GrossSalary")
+            if taxable <= 0:
+                missing_fields.append("TaxableIncome")
+            if tds <= 0:
+                missing_fields.append("TDS")
+
             tax_result = None
 
-    if tax_result:
-        try:
-            save_tax_result(file_id, tax_result, regime=regime)
-        except Exception as exc:
-            log.warning("[Process] Failed to persist tax result: %s", exc)
+            if missing_fields:
+                log.warning(
+                    "[Process] TAX SKIPPED — missing critical fields: %s. "
+                    "Cannot compute reliable tax on incomplete extraction.",
+                    missing_fields,
+                )
+            else:
+                log.info("[Process] Tax inputs — gross=%.0f taxable=%.0f deductions=%.0f tds=%.0f regime=%s",
+                         gross, taxable, deductions, tds, regime)
 
-    return ProcessResponse(
-        file_id=file_id,
-        text=raw_text,
-        entities=entities,
-        validation=val_result,
-        tax=tax_result,
-    )
+                # Sanity check: gross >= taxable
+                if taxable > gross:
+                    log.warning(
+                        "[Process] ANOMALY: taxable (%.0f) > gross (%.0f) — "
+                        "using taxable as gross for safety.",
+                        taxable, gross,
+                    )
+                    gross = taxable
+                    deductions = 0.0
+
+                print("[DEBUG] About to call compute_tax()")
+                try:
+                    print("[DEBUG] Inside tax computation try block")
+                    tax_result = compute_tax({
+                        "GrossSalary": gross,
+                        "Deductions":  deductions,
+                        "TDS":         tds,
+                        "Regime":      regime,
+                    })
+                    print(f"[DEBUG] compute_tax returned: type={type(tax_result)}")
+
+                    # If the document itself has "TaxOnIncome" extracted, compare
+                    doc_tax = _to_float(entity_map.get("TaxOnIncome", 0))
+                    if doc_tax > 0:
+                        computed = tax_result.get("base_tax", 0)
+                        diff = abs(computed - doc_tax)
+                        if diff > 10:
+                            log.warning(
+                                "[Process] TAX CROSS-CHECK: computed base_tax (%.0f) != "
+                                "document TaxOnIncome (%.0f), diff=%.0f. "
+                                "Document value may be more accurate.",
+                                computed, doc_tax, diff,
+                            )
+                        else:
+                            log.info(
+                                "[Process] TAX CROSS-CHECK PASSED: computed=%.0f vs document=%.0f",
+                                computed, doc_tax,
+                            )
+
+                    log.info("[Process] Tax done — total_tax=%.2f refund=%.2f",
+                             tax_result.get("total_tax", 0), tax_result.get("refund_or_payable", 0))
+                except Exception as exc:
+                    print(f"[ERROR TAX] {exc}")
+                    import traceback
+                    print(f"[ERROR TRACEBACK] {traceback.format_exc()}")
+                    log.error("[Process] Tax computation failed: %s", exc)
+                    tax_result = None
+            print("[DEBUG] END TAX")
+
+            if tax_result:
+                try:
+                    save_tax_result(file_id, tax_result, regime=regime)
+                except Exception as exc:
+                    log.warning("[Process] Failed to persist tax result: %s", exc)
+
+            # Build response with proper error handling
+            print("[DEBUG] BUILDING RESPONSE")
+            try:
+                print(f"[DEBUG] response params: file_id={file_id}, entities count={len(entities)}, val_result={type(val_result_dict).__name__}, tax_result={type(tax_result).__name__ if tax_result else 'None'}")
+                response = ProcessResponse(
+                    file_id=file_id,
+                    text=raw_text,
+                    entities=entities,
+                    validation=val_result_dict,
+                    tax=tax_result,
+                )
+                print("[DEBUG] RETURNING RESPONSE")
+                return response
+            except Exception as exc:
+                print(f"[ERROR] Failed to create ProcessResponse: {exc}")
+                import traceback
+                print(f"[ERROR TRACEBACK] {traceback.format_exc()}")
+                log.error("[Process] Failed to create response: %s", exc)
+                # Return minimal valid response
+                return ProcessResponse(
+                    file_id=file_id,
+                    text=raw_text,
+                    entities=entities,
+                    validation={"status": "error", "score": 0, "issues": []},
+                    tax=None,
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            print(f"[FATAL ERROR] {exc}")
+            import traceback
+            print(f"[FATAL TRACEBACK] {traceback.format_exc()}")
+            log.error("[Process] FATAL ERROR: %s", exc)
+            raise HTTPException(status_code=500, detail=str(_structured_error("process", str(exc))))
+
+    # Run with timeout
+    try:
+        result = await asyncio.wait_for(run_pipeline_with_timeout(), timeout=120.0)
+        return result
+    except asyncio.TimeoutError:
+        log.error("[Process] Pipeline timeout exceeded 120 seconds")
+        print("[ERROR] Pipeline timeout!")
+        raise HTTPException(status_code=504, detail="Pipeline processing timed out after 120 seconds")
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
+        print(f"[ERROR] Unexpected error: {exc}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ====================================================================== #
