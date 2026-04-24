@@ -1,14 +1,40 @@
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
-pydantic>=2.7.0
-pydantic-settings>=2.2.0
-sqlalchemy>=2.0.0
-opencv-python-headless>=4.9.0
-pytesseract>=0.3.10
-pdf2image>=1.17.0
-python-multipart>=0.0.9
-paddleocr>=3.0.0
-transformers>=4.40.0
-torch>=2.2.0
-pandas>=2.2.0
-reportlab>=4.0.0
+# ============================================================================
+# tax-buddy backend — Production dependencies
+# Pinned versions for reproducibility across environments
+# ============================================================================
+
+# Web Framework
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+uvloop==0.22.1
+python-multipart==0.0.26
+
+# Configuration & Validation
+pydantic==2.13.3
+pydantic-settings==2.14.0
+python-dotenv==1.2.2
+
+# Database
+SQLAlchemy==2.0.49
+
+# OCR
+opencv-python-headless==4.13.0.92
+pytesseract==0.3.13
+paddleocr==3.5.0
+pdf2image==1.17.0
+
+# NLP / Named Entity Recognition
+transformers==5.6.2
+torch==2.11.0
+tokenizers==0.22.2
+
+# Data Processing
+pandas==3.0.2
+numpy==2.3.5
+
+# PDF Generation & Reporting
+reportlab==4.4.10
+
+# Utilities
+requests==2.33.1
+Pillow==12.2.0

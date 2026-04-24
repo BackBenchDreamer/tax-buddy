@@ -264,31 +264,22 @@ def compute_tax(data: Dict[str, Any]) -> Dict[str, Any]:
     dict
         Full computation result with breakdown, refund / payable, etc.
     """
-    print("[DEBUG] inside compute_tax")
     gross = float(data.get("GrossSalary", 0))
     deductions = float(data.get("Deductions", 0))
     tds = float(data.get("TDS", 0))
     regime = str(data.get("Regime", "old")).lower()
-
-    print(f"[DEBUG] compute_tax params: gross={gross}, deductions={deductions}, tds={tds}, regime={regime}")
 
     log.info(
         "Computing tax — regime=%s, gross=%.0f, deductions=%.0f, TDS=%.0f",
         regime, gross, deductions, tds,
     )
 
-    print("[DEBUG] About to call regime-specific function")
     if regime == "new":
-        print("[DEBUG] Calling compute_new_regime")
         result = compute_new_regime(gross)
     else:
-        print("[DEBUG] Calling compute_old_regime")
         result = compute_old_regime(gross, deductions)
 
-    print(f"[DEBUG] regime function returned: {result}")
-
     # Refund vs. payable
-    print("[DEBUG] Computing refund/payable")
     refund_or_payable = round(tds - result["total_tax"], 2)
     result["tds_paid"] = tds
     result["refund_or_payable"] = refund_or_payable
@@ -299,7 +290,6 @@ def compute_tax(data: Dict[str, Any]) -> Dict[str, Any]:
         result["total_tax"], tds, label, abs(refund_or_payable),
     )
 
-    print("[DEBUG] compute_tax returning")
     return result
 
 
