@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Entity, ExtractedData } from '@/types';
 import { formatCurrency, cn } from '@/lib/utils';
-import { User, Wallet, Receipt, ChevronDown, FileText } from 'lucide-react';
+import { User, Wallet, Receipt, ChevronDown, ShieldCheck } from 'lucide-react';
 
 interface ExtractedDataTableProps {
   entities: Entity[];
@@ -30,153 +30,106 @@ const DEDUCTION_FIELDS: Array<{ key: keyof ExtractedData; label: string }> = [
 
 export function ExtractedDataTable({ entities }: ExtractedDataTableProps) {
   const map: Record<string, string> = {};
-  entities.forEach((e) => { map[e.label] = e.value; });
+  const confMap: Record<string, number> = {};
+  
+  entities.forEach((e) => { 
+    map[e.label] = e.value; 
+    confMap[e.label] = e.confidence;
+  });
 
-  const get = (key: string): string | undefined => map[key];
-  const getNum = (key: string): number | undefined => {
+  const get = (key: string) => map[key];
+  const getConf = (key: string) => confMap[key];
+  const getNum = (key: string) => {
     const v = map[key];
     return v != null ? parseFloat(v) : undefined;
   };
 
-  const avgConf = entities.length > 0
-    ? entities.reduce((s, e) => s + e.confidence, 0) / entities.length
-    : 0;
-
   return (
-    <div className="glow-card p-5 flex flex-col gap-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-violet-500/20 flex items-center justify-center">
-            <FileText className="w-4 h-4 text-violet-400" />
-          </div>
-          <h2 className="text-sm font-semibold text-slate-200 tracking-wide uppercase">Extracted Data</h2>
-        </div>
-        <span className="text-xs text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">
-          {entities.length} fields · {(avgConf * 100).toFixed(0)}% conf
-        </span>
-      </div>
+    <div className="flex flex-col gap-3">
+      <AccordionSection
+        icon={<User className="w-4 h-4 text-violet-400" />}
+        title="Personal Info"
+        defaultOpen={false}
+        count={PERSONAL_FIELDS.filter(f => get(String(f.key))).length}
+      >
+        {PERSONAL_FIELDS.map(({ key, label }) => (
+          <Row key={String(key)} label={label} value={get(String(key))} conf={getConf(String(key))} mono={['PAN','TAN'].includes(String(key))} />
+        ))}
+      </AccordionSection>
 
-      {/* Accordion sections */}
-      <div className="flex flex-col gap-2">
-        <AccordionSection
-          icon={<User className="w-3.5 h-3.5" />}
-          title="Personal Info"
-          color="violet"
-          defaultOpen={false}
-          count={PERSONAL_FIELDS.filter(f => get(String(f.key))).length}
-        >
-          {PERSONAL_FIELDS.map(({ key, label }) => (
-            <Row key={String(key)} label={label} value={get(String(key))} mono={['PAN','TAN'].includes(String(key))} />
-          ))}
-        </AccordionSection>
+      <AccordionSection
+        icon={<Wallet className="w-4 h-4 text-indigo-400" />}
+        title="Income Details"
+        defaultOpen={true}
+        count={INCOME_FIELDS.filter(f => getNum(String(f.key)) != null).length}
+      >
+        {INCOME_FIELDS.map(({ key, label, isCurrency }) => {
+          const val = getNum(String(key));
+          return (
+            <Row
+              key={String(key)}
+              label={label}
+              value={isCurrency && val != null ? formatCurrency(val) : val?.toString()}
+              conf={getConf(String(key))}
+            />
+          );
+        })}
+      </AccordionSection>
 
-        <AccordionSection
-          icon={<Wallet className="w-3.5 h-3.5" />}
-          title="Income"
-          color="indigo"
-          defaultOpen={true}
-          count={INCOME_FIELDS.filter(f => getNum(String(f.key)) != null).length}
-        >
-          {INCOME_FIELDS.map(({ key, label, isCurrency }) => {
-            const val = getNum(String(key));
-            return (
-              <Row
-                key={String(key)}
-                label={label}
-                value={isCurrency && val != null ? formatCurrency(val) : val?.toString()}
-                highlight={label === 'TDS Deducted'}
-              />
-            );
-          })}
-        </AccordionSection>
-
-        <AccordionSection
-          icon={<Receipt className="w-3.5 h-3.5" />}
-          title="Deductions"
-          color="emerald"
-          defaultOpen={false}
-          count={DEDUCTION_FIELDS.filter(f => getNum(String(f.key)) != null).length}
-        >
-          {DEDUCTION_FIELDS.map(({ key, label }) => {
-            const val = getNum(String(key));
-            return <Row key={String(key)} label={label} value={val != null ? formatCurrency(val) : undefined} />;
-          })}
-        </AccordionSection>
-      </div>
+      <AccordionSection
+        icon={<Receipt className="w-4 h-4 text-emerald-400" />}
+        title="Deductions"
+        defaultOpen={false}
+        count={DEDUCTION_FIELDS.filter(f => getNum(String(f.key)) != null).length}
+      >
+        {DEDUCTION_FIELDS.map(({ key, label }) => {
+          const val = getNum(String(key));
+          return <Row key={String(key)} label={label} value={val != null ? formatCurrency(val) : undefined} conf={getConf(String(key))} />;
+        })}
+      </AccordionSection>
     </div>
   );
 }
 
-// ── Accordion Section ────────────────────────────────────────────────────
-
-function AccordionSection({
-  icon, title, color, children, defaultOpen = false, count,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  color: 'violet' | 'indigo' | 'emerald';
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-  count: number;
-}) {
+function AccordionSection({ icon, title, children, defaultOpen = false, count }: { icon: React.ReactNode; title: string; children: React.ReactNode; defaultOpen?: boolean; count: number }) {
   const [open, setOpen] = useState(defaultOpen);
 
-  const colorMap = {
-    violet: 'text-violet-400 bg-violet-500/10',
-    indigo: 'text-indigo-400 bg-indigo-500/10',
-    emerald: 'text-emerald-400 bg-emerald-500/10',
-  };
-
   return (
-    <div className="rounded-xl bg-slate-900/40 border border-slate-800/60 overflow-hidden">
+    <div className="rounded-xl bg-slate-900/30 border border-slate-800/50 overflow-hidden transition-colors hover:border-slate-700/50">
       <button
         onClick={() => setOpen(!open)}
-        className={cn(
-          'w-full flex items-center justify-between px-4 py-2.5 transition-colors hover:bg-slate-800/20',
-          colorMap[color],
-        )}
+        className="w-full flex items-center justify-between px-6 py-4"
       >
-        <div className="flex items-center gap-2">
-          {icon}
-          <span className="text-xs font-semibold uppercase tracking-widest">{title}</span>
-          <span className="text-[10px] opacity-50 ml-1">({count})</span>
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-slate-800/50">{icon}</div>
+          <span className="text-sm font-semibold text-slate-200">{title}</span>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">{count} fields</span>
         </div>
-        <ChevronDown className={cn('w-3.5 h-3.5 opacity-60 transition-transform duration-200', open && 'rotate-180')} />
+        <ChevronDown className={cn('w-4 h-4 text-slate-500 transition-transform duration-200', open && 'rotate-180')} />
       </button>
-      <div className={cn(
-        'transition-all duration-200 ease-in-out overflow-hidden',
-        open ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0',
-      )}>
-        <div className="divide-y divide-slate-800/40">{children}</div>
+      <div className={cn('transition-all duration-300 ease-in-out overflow-hidden', open ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0')}>
+        <div className="divide-y divide-slate-800/30 px-6 pb-2">{children}</div>
       </div>
     </div>
   );
 }
 
-// ── Row ──────────────────────────────────────────────────────────────────
-
-function Row({
-  label, value, mono = false, highlight = false,
-}: {
-  label: string;
-  value?: string;
-  mono?: boolean;
-  highlight?: boolean;
-}) {
+function Row({ label, value, conf, mono = false }: { label: string; value?: string; conf?: number; mono?: boolean }) {
   return (
-    <div className="flex items-center justify-between px-4 py-2.5 group">
-      <span className="text-xs text-slate-500 group-hover:text-slate-400 transition-colors">{label}</span>
-      <span
-        className={cn('text-xs font-medium', {
-          'text-slate-700 italic': !value,
-          'text-amber-400': highlight && value,
-          'font-mono text-slate-200 tracking-wider': mono && value && !highlight,
-          'text-slate-200': value && !highlight && !mono,
-        })}
-      >
-        {value ?? 'Not detected'}
-      </span>
+    <div className="flex items-center justify-between py-3 group">
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate-400 group-hover:text-slate-300 transition-colors">{label}</span>
+      </div>
+      <div className="flex items-center gap-4 text-right">
+        <span className={cn('text-sm font-medium', !value ? 'text-slate-600 italic' : mono ? 'font-mono text-slate-200 tracking-wider' : 'text-slate-100')}>
+          {value ?? 'Not detected'}
+        </span>
+        {value && conf && (
+          <div className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+            <ShieldCheck className="w-3 h-3" /> {(conf * 100).toFixed(0)}%
+          </div>
+        )}
+      </div>
     </div>
   );
 }

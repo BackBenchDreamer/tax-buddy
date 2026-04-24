@@ -1,40 +1,36 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 import { FileUpload } from '@/components/FileUpload';
 import { ProcessingSteps, StepKey } from '@/components/ProcessingSteps';
 import { ExtractedDataTable } from '@/components/ExtractedDataTable';
 import { ValidationPanel } from '@/components/ValidationPanel';
 import { TaxSummary } from '@/components/TaxSummary';
+import { RegimeComparison } from '@/components/RegimeComparison';
+import { TaxExplanation } from '@/components/TaxExplanation';
 import { Charts } from '@/components/Charts';
 import { processDocument, computeTax, APIError } from '@/lib/api';
 import { ProcessResponse, TaxResult } from '@/types';
-import { Zap, Activity, ArrowLeftRight } from 'lucide-react';
+import { Zap, ArrowLeftRight, FileText, CheckCircle2 } from 'lucide-react';
 
 type AppState = 'idle' | 'processing' | 'results';
 
 export default function Home() {
-  // ── Core state ─────────────────────────────────────────────────────────
   const [appState, setAppState] = useState<AppState>('idle');
   const [result, setResult] = useState<ProcessResponse | null>(null);
   const [regimeNew, setRegimeNew] = useState<TaxResult | null>(null);
-  const [showComparison, setShowComparison] = useState(false);
-  const [comparingRegimes, setComparingRegimes] = useState(false);
-
-  // ── Processing orchestration ───────────────────────────────────────────
   const [apiResolved, setApiResolved] = useState(false);
   const [processingError, setProcessingError] = useState<{ stage: StepKey; message: string } | null>(null);
+  
   const currentFileRef = useRef<File | null>(null);
   const [currentFileName, setCurrentFileName] = useState<string>('');
 
   const handleProcess = useCallback(async (file: File) => {
-    // Reset all state for new run
     currentFileRef.current = file;
     setCurrentFileName(file.name);
     setResult(null);
     setRegimeNew(null);
-    setShowComparison(false);
     setApiResolved(false);
     setProcessingError(null);
     setAppState('processing');
@@ -42,14 +38,29 @@ export default function Home() {
     try {
       const data = await processDocument(file);
       setResult(data);
+      
+      // Auto-compute new regime if old is present
+      if (data.tax) {
+        try {
+          const entityMap: Record<string, string | number> = {};
+          data.entities.forEach(e => { entityMap[e.label] = e.value; });
+          const gross = parseFloat(String(entityMap['GrossSalary'] ?? 0));
+          const taxable = parseFloat(String(entityMap['TaxableIncome'] ?? 0));
+          const tds = parseFloat(String(entityMap['TDS'] ?? 0));
+          
+          if (gross > 0) {
+            const newTax = await computeTax({ GrossSalary: gross, Deductions: gross - taxable, TDS: tds }, 'new');
+            setRegimeNew(newTax);
+          }
+        } catch (e) {
+          console.error("Failed to auto-compute new regime", e);
+        }
+      }
+
       setApiResolved(true);
-      // onComplete callback in ProcessingSteps will transition to 'results'
     } catch (err) {
       const stage: StepKey = (err instanceof APIError && err.stage === 'process') ? 'ocr' : 'ocr';
-      const msg = err instanceof APIError
-        ? err.message
-        : 'Unexpected error. Is the backend running?';
-
+      const msg = err instanceof APIError ? err.message : 'Unexpected error. Is the backend running?';
       setProcessingError({ stage, message: msg });
       setApiResolved(true);
       toast.error('Processing failed', { description: msg });
@@ -58,9 +69,10 @@ export default function Home() {
 
   const handleProcessingComplete = useCallback(() => {
     setAppState('results');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
     if (result) {
-      toast.success('Document processed successfully!', {
-        description: `${result.entities.length} fields extracted · Trust score: ${result.validation.score}/100`,
+      toast.success('Analysis Complete', {
+        description: `Verified ${result.entities.length} fields. Score: ${result.validation.score}/100`,
       });
     }
   }, [result]);
@@ -68,166 +80,134 @@ export default function Home() {
   const handleRetry = useCallback(() => {
     if (currentFileRef.current) {
       handleProcess(currentFileRef.current);
+    } else {
+      setAppState('idle');
     }
   }, [handleProcess]);
 
-  // ── Regime comparison ──────────────────────────────────────────────────
-  const handleCompareRegimes = async () => {
-    if (!result?.tax) return;
-    setComparingRegimes(true);
-    try {
-      const entityMap: Record<string, string | number> = {};
-      result.entities.forEach(e => { entityMap[e.label] = e.value; });
-      const gross = parseFloat(String(entityMap['GrossSalary'] ?? 0));
-      const taxable = parseFloat(String(entityMap['TaxableIncome'] ?? 0));
-      const tds = parseFloat(String(entityMap['TDS'] ?? 0));
-      const newTax = await computeTax({ GrossSalary: gross, Deductions: gross - taxable, TDS: tds }, 'new');
-      setRegimeNew(newTax);
-      setShowComparison(true);
-      toast.success('Regime comparison ready');
-    } catch {
-      toast.error('Could not compute new regime tax');
-    } finally {
-      setComparingRegimes(false);
-    }
-  };
+  const comparison = result?.tax && regimeNew ? { old: result.tax, new: regimeNew } : null;
 
-  const comparison = showComparison && result?.tax && regimeNew
-    ? { old: result.tax, new: regimeNew }
-    : null;
-
-  // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* ── Top Nav ──────────────────────────────────────────────────────── */}
+    <div className="min-h-screen flex flex-col bg-[#0a0b0f] text-slate-100 font-sans selection:bg-indigo-500/30">
+      
+      {/* ── TOP NAV ───────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 border-b border-slate-800/60 bg-[#0a0b0f]/80 backdrop-blur-xl">
-        <div className="max-w-screen-2xl mx-auto px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="max-w-screen-xl mx-auto px-6 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setAppState('idle')}>
             <div className="w-8 h-8 rounded-xl bg-indigo-500 flex items-center justify-center shadow-lg shadow-indigo-500/30">
               <Zap className="w-4 h-4 text-white" />
             </div>
             <div>
               <span className="font-bold text-slate-100 tracking-tight">Tax Buddy</span>
-              <span className="text-slate-600 text-xs ml-2 hidden sm:inline">AI Filing Assistant</span>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            {appState === 'results' && result && (
+          <div className="flex items-center gap-4">
+            {appState === 'results' && (
               <button
-                onClick={handleCompareRegimes}
-                disabled={comparingRegimes}
-                className="flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-slate-100 border border-slate-700 hover:border-slate-600 transition-all"
+                onClick={() => setAppState('idle')}
+                className="text-xs font-semibold px-4 py-2 rounded-lg bg-slate-800/50 hover:bg-slate-700/50 border border-slate-700/50 transition-colors"
               >
-                <ArrowLeftRight className="w-3.5 h-3.5" />
-                {comparingRegimes ? 'Comparing…' : 'Compare Regimes'}
+                Upload another document
               </button>
             )}
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-xs text-slate-500 hidden sm:inline">API Connected</span>
+              <span className="text-xs text-slate-500 hidden sm:inline">AI Engine Active</span>
             </div>
           </div>
         </div>
       </header>
 
-      {/* ── Hero (only when idle) ────────────────────────────────────────── */}
-      {appState === 'idle' && (
-        <div className="text-center py-16 px-6">
-          <div className="inline-flex items-center gap-2 text-xs text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 rounded-full px-3 py-1 mb-6">
-            <Activity className="w-3 h-3" />
-            <span>Powered by OCR · NER · AI Tax Engine</span>
-          </div>
-          <h1 className="text-4xl md:text-5xl font-bold text-slate-100 mb-4 leading-tight">
-            Instant Tax Analysis<br />
-            <span className="gradient-text">From Your Form 16</span>
-          </h1>
-          <p className="text-slate-500 max-w-xl mx-auto text-base">
-            Upload your Form 16 PDF and get extracted entities, validation against Form 26AS,
-            and full tax computation in seconds.
-          </p>
-        </div>
-      )}
-
-      {/* ── Main Content ─────────────────────────────────────────────────── */}
-      <main className="flex-1 max-w-screen-2xl mx-auto w-full px-4 md:px-6 pb-10">
+      {/* ── MAIN CONTENT ─────────────────────────────────────────────────── */}
+      <main className="flex-1 w-full flex flex-col">
+        
+        {/* PHASE 1: UPLOAD */}
         {appState === 'idle' && (
-          /* Upload-focused layout */
-          <div className="max-w-md mx-auto">
-            <FileUpload onProcess={handleProcess} isLoading={false} />
-          </div>
-        )}
-
-        {appState === 'processing' && (
-          /* Processing panel — replaces upload card */
-          <div className="max-w-md mx-auto">
-            <ProcessingSteps
-              isProcessing={true}
-              apiResolved={apiResolved}
-              error={processingError}
-              onComplete={handleProcessingComplete}
-              onRetry={handleRetry}
-              fileName={currentFileName}
-            />
-          </div>
-        )}
-
-        {appState === 'results' && result && (
-          /* Results dashboard — hierarchical layout */
-          <div className="flex flex-col gap-8">
-            {/* Compact upload strip */}
-            <div className="max-w-sm">
-              <FileUpload onProcess={handleProcess} isLoading={false} />
+          <div className="flex-1 flex items-center justify-center p-6 animate-in fade-in duration-700">
+            <div className="max-w-2xl w-full text-center">
+              <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight mb-4 text-slate-100">
+                Upload your <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400">Form 16</span>
+              </h1>
+              <p className="text-slate-400 text-lg mb-10 max-w-lg mx-auto">
+                AI-powered tax analysis in seconds. We extract, validate, and compute everything for you.
+              </p>
+              <div className="p-1 rounded-3xl bg-gradient-to-b from-slate-800/60 to-slate-900/40 border border-slate-800/80 shadow-2xl">
+                <div className="bg-[#0f111a] rounded-[22px] p-6">
+                  <FileUpload onProcess={handleProcess} isLoading={false} />
+                </div>
+              </div>
             </div>
+          </div>
+        )}
 
-            {/* ── TOP ROW: Tax Summary (primary) + Validation (support) ── */}
-            <section>
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-1 h-5 rounded-full bg-gradient-to-b from-amber-400 to-amber-600" />
-                <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Results</h2>
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="lg:col-span-2">
-                  {result.tax ? (
-                    <TaxSummary result={result.tax} comparison={comparison} />
-                  ) : (
-                    <div className="glow-card p-8 flex items-center justify-center">
-                      <p className="text-slate-600 text-sm">Tax result unavailable</p>
-                    </div>
-                  )}
+        {/* PHASE 2: PROCESSING */}
+        {appState === 'processing' && (
+          <div className="flex-1 flex items-center justify-center p-6 bg-[#0a0b0f]/80 backdrop-blur-sm animate-in fade-in duration-500">
+            <div className="max-w-md w-full">
+              <ProcessingSteps
+                isProcessing={true}
+                apiResolved={apiResolved}
+                error={processingError}
+                onComplete={handleProcessingComplete}
+                onRetry={handleRetry}
+                fileName={currentFileName}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* PHASE 3: RESULTS */}
+        {appState === 'results' && result && (
+          <div className="max-w-screen-xl mx-auto w-full px-6 py-10 flex flex-col gap-10 animate-in slide-in-from-bottom-8 fade-in duration-700">
+            
+            {/* ROW 1: HERO TAX SUMMARY */}
+            <section className="animate-in slide-in-from-bottom-4 fade-in duration-700 delay-100 fill-mode-both">
+              {result.tax ? (
+                <TaxSummary result={result.tax} />
+              ) : (
+                <div className="p-8 rounded-2xl bg-slate-900/50 border border-slate-800 text-center text-slate-500">
+                  Tax computation not available.
                 </div>
-                <div className="lg:col-span-1">
-                  <ValidationPanel result={result.validation} />
-                </div>
-              </div>
+              )}
             </section>
 
-            {/* ── MIDDLE ROW: Extracted Data (secondary) ── */}
-            <section>
+            {/* ROW 2: VALIDATION & REGIME */}
+            <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-bottom-4 fade-in duration-700 delay-200 fill-mode-both">
+              <ValidationPanel result={result.validation} />
+              <RegimeComparison comparison={comparison} />
+            </section>
+
+            {/* ROW 3: EXPLAIN YOUR TAX */}
+            {result.tax && (
+              <section className="animate-in slide-in-from-bottom-4 fade-in duration-700 delay-300 fill-mode-both">
+                <TaxExplanation result={result.tax} />
+              </section>
+            )}
+
+            {/* ROW 4: DOCUMENT DETAILS */}
+            <section className="animate-in slide-in-from-bottom-4 fade-in duration-700 delay-400 fill-mode-both">
               <div className="flex items-center gap-2 mb-4">
-                <div className="w-1 h-5 rounded-full bg-gradient-to-b from-violet-400 to-violet-600" />
-                <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Document Details</h2>
+                <FileText className="w-4 h-4 text-slate-400" />
+                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-widest">Document Details</h3>
               </div>
               <ExtractedDataTable entities={result.entities} />
             </section>
 
-            {/* ── BOTTOM ROW: Charts ── */}
+            {/* ROW 5: CHARTS */}
             {result.tax && (
-              <section>
+              <section className="animate-in slide-in-from-bottom-4 fade-in duration-700 delay-500 fill-mode-both">
                 <div className="flex items-center gap-2 mb-4">
                   <div className="w-1 h-5 rounded-full bg-gradient-to-b from-indigo-400 to-indigo-600" />
-                  <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Analytics</h2>
+                  <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-widest">Analytics</h3>
                 </div>
                 <Charts tax={result.tax} />
               </section>
             )}
+
           </div>
         )}
-      </main>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-800/40 py-4 text-center text-xs text-slate-700">
-        Tax Buddy · AI-powered Indian Income Tax Analysis · For informational purposes only
-      </footer>
+      </main>
     </div>
   );
 }
