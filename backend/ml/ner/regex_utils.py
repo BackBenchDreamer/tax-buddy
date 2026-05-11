@@ -509,6 +509,13 @@ def _validate_extraction(fields: Dict[str, Any]) -> None:
     """Post-extraction sanity checks."""
     gross = fields.get("GrossSalary")
     taxable = fields.get("TaxableIncome")
+    gti = fields.get("GrossTotalIncome")
+
+    # If GrossSalary is missing but GrossTotalIncome exists, use it as GrossSalary
+    if not gross and gti:
+        log.info("[NER-Regex] GrossSalary not found, using GrossTotalIncome (%.0f) as GrossSalary", gti)
+        fields["GrossSalary"] = gti
+        gross = gti
 
     if gross and taxable and taxable > gross:
         log.warning(
@@ -517,7 +524,6 @@ def _validate_extraction(fields: Dict[str, Any]) -> None:
             taxable, gross,
         )
         # Try to resolve: if GrossTotalIncome is present and between them, use it
-        gti = fields.get("GrossTotalIncome")
         if gti and gti >= taxable:
             log.info("[NER-Regex] Resolved: using GrossTotalIncome (%.0f) as GrossSalary", gti)
             fields["GrossSalary"] = gti
