@@ -21,7 +21,12 @@ SQLAlchemy==2.0.49
 opencv-python-headless==4.13.0.92
 pytesseract==0.3.13
 paddleocr==3.5.0
+# Note: paddlepaddle is required by paddleocr but has no ARM64 wheel for macOS
+# On x86_64 Linux/Windows, install with: pip install paddlepaddle
+# On ARM64 macOS, PaddleOCR will gracefully fall back to Tesseract
 pdf2image==1.17.0
+pdfplumber==0.11.4
+PyMuPDF==1.25.5
 
 # NLP / Named Entity Recognition
 transformers==5.6.2
@@ -38,3 +43,6 @@ reportlab==4.4.10
 # Utilities
 requests==2.33.1
 Pillow==12.2.0
+
+# AI / LLM
+groq==0.11.0

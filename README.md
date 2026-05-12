@@ -1,9 +1,9 @@
 # 🧾 Tax Buddy — AI-Powered Tax Filing Assistant
 
-> **OCR · NER · Validation · Tax Engine · Interactive Dashboard**  
-> Production-grade pipeline for automated Indian income tax analysis
+> **OCR · NER · Validation · Tax Engine · ITR Generation · AI Assistance**  
+> Production-grade hybrid AI workflow for automated Indian income tax filing
 
-Tax Buddy is an end-to-end system for extracting tax data from Form 16 PDFs, validating it against Form 26AS, computing income tax, and generating a downloadable tax summary report — all in under 5 seconds.
+Tax Buddy is an end-to-end system that processes Form 16 and Form 26AS documents, validates data across both forms, computes income tax under both Old and New regimes, and generates ITR forms (ITR-1/ITR-4) — all in under 5 seconds.
 
 **Status:** ✅ Production-ready | Fully tested | Clean, reproducible setup
 
@@ -13,110 +13,58 @@ Tax Buddy is an end-to-end system for extracting tax data from Form 16 PDFs, val
 
 | Layer | What it does | Tech |
 |-------|-------------|------|
-| **OCR** | Multi-page PDF extraction via PaddleOCR v3 (or Tesseract fallback) | PaddleOCR, pytesseract |
-| **NER** | Section-aware field extraction of PAN, TAN, Salary, TDS, Deductions | Custom regex + XLM-RoBERTa |
-| **Validation** | Cross-check Form 16 vs Form 26AS with trust score | 6 rules, 0–100 scoring |
-| **Tax Engine** | Indian slab-based calculator — Old & New regime | Full breakdown by bracket |
-| **PDF Export** | Download a formatted tax summary report | reportlab |
+| **OCR** | Multi-page PDF extraction via direct text → PaddleOCR → Tesseract | PaddleOCR, pytesseract, pdfplumber |
+| **NER** | Section-aware field extraction from Form 16 & Form 26AS | Custom regex + XLM-RoBERTa (optional) |
+| **Validation** | Cross-document validation with trust score (0-100) | 6 rules, penalty-based scoring |
+| **Tax Engine** | Indian slab-based calculator — Old & New regime (AY 2024-25) | Full breakdown by bracket |
+| **ITR Generation** | Auto-select and generate ITR-1 (Sahaj) or ITR-4 (Sugam) | JSON + PDF + prefill text |
+| **AI Assistance** | Groq-powered field resolution, explanations, recommendations | llama3-70b-8192 / mixtral-8x7b-32768 |
+| **PDF Export** | Download formatted tax summary report | reportlab |
 | **Dashboard** | Interactive React UI for file upload & results | Next.js, Recharts, Tailwind |
 
 ---
 
 ## 🏗️ Architecture
 
-### High-Level Pipeline
+### 6-Phase Pipeline
 
 ```
-PDF Input
-    │
-    ▼
-┌──────────────────────────┐
-│  OCR (PaddleOCR/Tesseract)│  Extract text (first page only in <5s)
-│  • Preprocessing         │  • Upscale, denoise, enhance
-└──────┬───────────────────┘
-       │
-       ▼
-┌──────────────────────────┐
-│  NER (Section-aware)     │  Extract tax fields
-│  • Regex patterns        │  • Fallback: XLM-RoBERTa
-│  • Known field mapping   │
-└──────┬───────────────────┘
-       │
-       ▼
-┌──────────────────────────┐
-│  Validation              │  Compare Form 16 vs Form 26AS
-│  • PAN/TAN match         │  • Trust score calculation
-│  • TDS reconciliation    │
-└──────┬───────────────────┘
-       │
-       ▼
-┌──────────────────────────┐
-│  Tax Computation         │  Calculate income tax
-│  • Old regime slabs      │  • Rebates (87A)
-│  • New regime slabs      │  • Cess (4%)
-│  • Refund / payable      │
-└──────┬───────────────────┘
-       │
-       ▼
-   JSON Response + Optional PDF Report
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  Document   │ →  │     OCR     │ →  │     NER     │
+│  Acquisition│    │  Extraction │    │  Extraction │
+└─────────────┘    └─────────────┘    └─────────────┘
+                                              │
+                                              ▼
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│     ITR     │ ←  │     Tax     │ ←  │ Validation  │
+│  Generation │    │ Computation │    │   Engine    │
+└─────────────┘    └─────────────┘    └─────────────┘
 ```
 
-### Codebase Structure
+**See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system design.**
+
+### OCR Priority Order (Strict)
 
 ```
-tax-buddy/
-├── Dockerfile                      # Production backend image
-├── docker-compose.yml              # Backend + Frontend orchestration
-├── README.md                       # This file
-├── .gitignore
-│
-├── backend/
-│   ├── requirements.txt            # Python dependencies (pinned versions)
-│   ├── .env.example                # Configuration template
-│   ├── app/
-│   │   ├── main.py                 # FastAPI entrypoint + startup
-│   │   ├── api/
-│   │   │   ├── routes.py           # 8 API endpoints
-│   │   │   └── router.py           # Route registration
-│   │   ├── core/
-│   │   │   ├── config.py           # Pydantic settings (from .env)
-│   │   │   ├── database.py         # SQLite via SQLAlchemy
-│   │   │   └── logging_config.py   # Structured logging
-│   │   ├── models/                 # SQLAlchemy ORM models
-│   │   ├── schemas/
-│   │   │   └── schemas.py          # Pydantic request/response models
-│   │   └── services/
-│   │       ├── tax_service.py      # Tax computation (old & new regime)
-│   │       └── validation_service.py  # Cross-document validation
-│   ├── ml/
-│   │   ├── ocr/
-│   │   │   ├── ocr_service.py      # PaddleOCR + Tesseract fallback
-│   │   │   └── preprocess.py       # Image enhancement
-│   │   └── ner/
-│   │       ├── ner_service.py      # Hybrid NER
-│   │       └── regex_utils.py      # Section-aware extraction
-│   ├── data/
-│   │   ├── uploads/                # User PDFs (runtime, git-ignored)
-│   │   └── taxbuddy.db             # SQLite DB (runtime, git-ignored)
-│   ├── logs/                       # Runtime logs (git-ignored)
-│   └── tests/
-│       └── test_pipeline.py        # Smoke tests
-│
-└── frontend/
-    ├── app/                        # Next.js App Router
-    ├── components/                 # React components
-    ├── lib/                        # API client, utilities
-    ├── types/                      # TypeScript types
-    ├── next.config.ts
-    ├── package.json
-    └── tsconfig.json
+1. Direct PDF Text Extraction (pdfplumber/PyMuPDF)
+   ↓ (if no clean text)
+2. PaddleOCR (primary OCR engine)
+   ↓ (if fails or low confidence)
+3. Tesseract OCR (fallback only)
 ```
+
+### Groq AI Integration Points
+
+1. **Ambiguous OCR field resolution** — when extracted text doesn't match expected patterns
+2. **NER fallback** — when rule-based extraction fails
+3. **Validation mismatch explanations** — user-friendly explanations of discrepancies
+4. **Tax regime recommendations** — AI-powered advice on which regime is better
 
 ---
 
-## ⚙️ System Requirements
+## 🚀 Quick Start
 
-### Local Development
+### Prerequisites
 
 | Component | Requirement | Install |
 |-----------|-------------|---------|
@@ -125,20 +73,14 @@ tax-buddy/
 | **Tesseract** | 5.x+ | macOS: `brew install tesseract` / Linux: `apt-get install tesseract-ocr` |
 | **Poppler** | latest | macOS: `brew install poppler` / Linux: `apt-get install poppler-utils` |
 
-### Docker (Recommended)
-
-- Docker 20.10+
-- Docker Compose 1.29+
-
----
-
-## 🚀 Quick Start
-
-### Option A: Docker (Recommended for consistency)
+### Option A: Docker (Recommended)
 
 ```bash
 git clone https://github.com/BackBenchDreamer/tax-buddy.git
 cd tax-buddy
+
+# Set Groq API key (optional, for AI features)
+export GROQ_API_KEY=your_key_here
 
 # Start both backend and frontend
 docker-compose up --build
@@ -153,20 +95,19 @@ docker-compose up --build
 #### 1. Backend Setup
 
 ```bash
-git clone https://github.com/BackBenchDreamer/tax-buddy.git
 cd tax-buddy/backend
 
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# or: .venv\Scripts\activate  (Windows)
+# Create virtual environment (REQUIRED)
+python3 -m venv venv
+source venv/bin/activate  # Linux/macOS
+# or: venv\Scripts\activate  (Windows)
 
 # Install dependencies
 pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env if needed (defaults work for local dev)
+# Edit .env and set GROQ_API_KEY if using AI features
 
 # Run backend
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -198,15 +139,16 @@ Frontend runs at: **http://localhost:3000**
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/upload` | `POST` | Upload a PDF/image file |
-| `/extract` | `POST` | OCR + NER on uploaded file |
+| `/extract` | `POST` | OCR + NER on Form 16 |
+| `/extract-26as` | `POST` | OCR + NER on Form 26AS |
 | `/validate` | `POST` | Cross-validate Form 16 vs Form 26AS |
-| `/compute-tax` | `POST` | Calculate income tax |
-| `/generate-itr` | `POST` | Generate ITR-1 JSON structure |
+| `/compute-tax` | `POST` | Calculate income tax (both regimes) |
+| `/generate-itr` | `POST` | Generate ITR-1 or ITR-4 (JSON + PDF + text) |
 | `/process` | `POST` | **RECOMMENDED** — Full pipeline in one request |
 | `/generate-report` | `POST` | Generate downloadable PDF report |
 | `/system/health` | `GET` | Health check |
 
-### Example: Full Pipeline (`/process`)
+### Example: Full Pipeline
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/process \
@@ -220,10 +162,11 @@ curl -X POST http://localhost:8000/api/v1/process \
   "file_id": "abc123def456",
   "text": "extracted text...",
   "entities": [
-    {"label": "PAN", "value": "AABCD1234E", "confidence": 0.98}
+    {"label": "PAN", "value": "AABCD1234E", "confidence": 0.98},
+    {"label": "GrossSalary", "value": "873898.0", "confidence": 0.92}
   ],
   "validation": {
-    "status": "passed",
+    "status": "ok",
     "score": 92,
     "issues": []
   },
@@ -231,25 +174,11 @@ curl -X POST http://localhost:8000/api/v1/process \
     "regime": "old",
     "gross_income": 873898.0,
     "taxable_income": 604280.0,
-    "total_tax": 95642.0,
-    "tax": null,
-    "refund_or_payable": -60952.0,
+    "total_tax": 32090.24,
+    "refund_or_payable": 2599.76,
     "breakdown": [...]
   }
 }
-```
-
-### Example: Generate PDF Report
-
-```bash
-curl -X POST http://localhost:8000/api/v1/generate-report \
-  -H "Content-Type: application/json" \
-  -d '{
-    "entities": [{"label": "PAN", "value": "AABCD1234E", "confidence": 0.98}],
-    "validation": {"status": "passed", "score": 92, "issues": []},
-    "tax": {...}
-  }' \
-  -o report.pdf
 ```
 
 ---
@@ -279,6 +208,11 @@ NER_CONFIDENCE_THRESHOLD=0.60
 
 # Tax
 DEFAULT_TAX_REGIME=old
+
+# Groq API (for AI assistance)
+GROQ_API_KEY=your_key_here
+GROQ_MODEL=llama3-70b-8192
+GROQ_TIMEOUT=30
 ```
 
 **Copy template:**
@@ -286,7 +220,7 @@ DEFAULT_TAX_REGIME=old
 ```bash
 cd backend
 cp .env.example .env
-# Edit as needed
+# Edit .env with your values
 ```
 
 ---
@@ -300,10 +234,11 @@ cp .env.example .env
 - **PDF generation**: ~1 second
 
 **Optimization strategies:**
+- Direct PDF text extraction (when available)
 - PaddleOCR processes first page only for speed
 - Image preprocessing (denoise, contrast enhancement)
 - Service singletons loaded once per worker
-- Structured logging with minimal I/O
+- Async Groq API calls with timeouts
 
 ---
 
@@ -312,12 +247,136 @@ cp .env.example .env
 ```bash
 cd backend
 
-# Run smoke tests
+# Activate virtual environment
+source venv/bin/activate
+
+# Run tests
 python -m pytest tests/test_pipeline.py -v
 
 # Run with coverage
 python -m pytest tests/ --cov=app --cov=ml
 ```
+
+---
+
+## 📦 Deployment
+
+### Docker Production Build
+
+```bash
+# Build image
+docker build -t tax-buddy:latest .
+
+# Run container
+docker run -d \
+  -p 8000:8000 \
+  -v $(pwd)/backend/data:/app/data \
+  -v $(pwd)/backend/logs:/app/logs \
+  -e DEBUG=false \
+  -e GROQ_API_KEY=your_key_here \
+  tax-buddy:latest
+```
+
+### Environment for Production
+
+```bash
+# backend/.env
+DEBUG=false
+OCR_CONFIDENCE_THRESHOLD=0.80
+NER_CONFIDENCE_THRESHOLD=0.70
+GROQ_API_KEY=your_production_key
+```
+
+---
+
+## 🎯 Tax Computation Details
+
+### Old Regime (AY 2024-25)
+
+- **Slabs:** 0-2.5L (0%), 2.5-5L (5%), 5-10L (20%), 10L+ (30%)
+- **Standard Deduction:** ₹50,000
+- **Deductions:** 80C (₹1.5L), 80D, 80TTA, 80TTB
+- **Rebate u/s 87A:** Taxable ≤ ₹5L → rebate up to ₹12,500
+- **Cess:** 4%
+
+### New Regime (AY 2024-25, Budget 2024)
+
+- **Slabs:** 0-3L (0%), 3-7L (5%), 7-10L (10%), 10-12L (15%), 12-15L (20%), 15L+ (30%)
+- **Standard Deduction:** ₹75,000 (Budget 2024)
+- **No other deductions** (80C, 80D not allowed)
+- **Rebate u/s 87A:** Taxable ≤ ₹7L → rebate up to ₹25,000
+- **Cess:** 4%
+
+**Both regimes are computed and compared side-by-side.**
+
+---
+
+## 📄 ITR Form Generation
+
+### Supported Forms
+
+- **ITR-1 (Sahaj):** For salaried individuals with income ≤ ₹50 lakhs
+- **ITR-4 (Sugam):** For individuals/HUFs with presumptive income u/s 44AD, 44ADA, 44AE
+
+### Auto-Selection Logic
+
+```python
+if total_income <= 50L and salary_only:
+    return "ITR-1"
+elif total_income <= 50L and presumptive_income:
+    return "ITR-4"
+else:
+    return "ITR-2" or "ITR-3"
+```
+
+### Output Formats
+
+1. **JSON:** Structured data matching ITR schema (for portal upload)
+2. **PDF:** Human-readable tax summary report
+3. **Plain Text:** Pre-fill reference for manual portal entry
+
+---
+
+## 🤖 AI Features (Groq Integration)
+
+### 1. Ambiguous OCR Resolution
+
+When OCR returns unclear text, Groq resolves it:
+
+```
+OCR: "Gr0ss S@lary: 8?3,898"
+Groq: "873898"
+```
+
+### 2. NER Fallback
+
+When regex fails to extract an entity, Groq steps in:
+
+```
+Text: "...employed by SIEMENS TECHNOLOGY..."
+Groq: {"value": "SIEMENS TECHNOLOGY AND SERVICES PRIVATE LIMITED", "confidence": 0.92}
+```
+
+### 3. Validation Explanations
+
+User-friendly explanations of validation issues:
+
+```
+Issue: TDS_MISMATCH
+Groq: "Your employer reported ₹34,690 in TDS on Form 16, but Form 26AS shows ₹34,000. 
+       This difference of ₹690 may be due to timing of TDS deposit. Verify with your employer."
+```
+
+### 4. Tax Regime Recommendation
+
+AI-powered advice on which regime is better:
+
+```
+Groq: "The Old Regime saves you ₹7,310 because your deductions (₹1.75L under 80C and 80D) 
+       exceed the additional standard deduction (₹25K) offered by the New Regime."
+```
+
+**Note:** All AI features are optional and gracefully degrade if Groq API is unavailable.
 
 ---
 
@@ -341,11 +400,17 @@ brew install tesseract
 - Check `OCR_DPI` setting (200 is default)
 - Try increasing `OCR_CONFIDENCE_THRESHOLD`
 
-### NER fields not extracted
+### PaddleOCR not working
 
-- Check that document contains expected fields (PAN, TAN, Salary, etc.)
-- Verify `NER_CONFIDENCE_THRESHOLD` is not too high
-- Set `NER_USE_TRANSFORMER=true` for stricter matching (slower)
+- On ARM64 macOS, PaddleOCR may not have a wheel
+- System will automatically fall back to Tesseract
+- Check logs for "[OCR] PaddleOCR unavailable" message
+
+### Groq API errors
+
+- Verify `GROQ_API_KEY` is set correctly
+- Check API quota/rate limits
+- System will continue without AI features if Groq fails
 
 ### Database errors
 
@@ -357,46 +422,21 @@ rm backend/data/taxbuddy.db*
 
 ---
 
-## 📦 Deployment
+## 📚 Documentation
 
-### Docker Production Build
-
-```bash
-# Build image
-docker build -t tax-buddy:latest .
-
-# Run container
-docker run -d \
-  -p 8000:8000 \
-  -v $(pwd)/backend/data:/app/data \
-  -v $(pwd)/backend/logs:/app/logs \
-  -e DEBUG=false \
-  tax-buddy:latest
-```
-
-### Environment for Production
-
-```bash
-# backend/.env
-DEBUG=false
-OCR_CONFIDENCE_THRESHOLD=0.80
-NER_CONFIDENCE_THRESHOLD=0.70
-```
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Detailed system design, pipeline phases, data flows
+- **[API Docs](http://localhost:8000/docs)** — Interactive Swagger UI (when backend is running)
+- **Inline Code Comments** — All modules are extensively documented
 
 ---
 
 ## 🎯 Known Limitations
 
 1. **OCR on first page only** — Multi-page PDFs process only the first page (for <5s response time)
-2. **PAN/TAN required** — Validation requires both Form 16 PAN and Form 26AS TAN
-3. **New regime only allows ₹50k deduction** — Standalone investment deductions not supported
+2. **Form 26AS optional** — Validation requires both forms, but system works with Form 16 alone
+3. **ITR-1 and ITR-4 only** — ITR-2, ITR-3 support planned for future
 4. **SQLite only** — Use PostgreSQL for production + concurrency
-
----
-
-## 📝 License
-
-[MIT License](LICENSE)
+5. **Groq API required for AI features** — Falls back gracefully if unavailable
 
 ---
 
@@ -416,4 +456,13 @@ For issues, questions, or feature requests: [GitHub Issues](https://github.com/B
 
 ---
 
+## 📝 License
+
+[MIT License](LICENSE)
+
+---
+
 **Built with ❤️ for Indian taxpayers**
+
+**Version:** 1.0.0  
+**Last Updated:** 2026-05-12

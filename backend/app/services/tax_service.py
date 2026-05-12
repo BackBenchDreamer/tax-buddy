@@ -37,25 +37,24 @@ OLD_REGIME_SLABS: List[Dict[str, Any]] = [
 ]
 
 NEW_REGIME_SLABS: List[Dict[str, Any]] = [
-    {"lower": 0,          "upper": 400_000,   "rate": 0.00},
-    {"lower": 400_000,    "upper": 800_000,   "rate": 0.05},
-    {"lower": 800_000,    "upper": 1_200_000, "rate": 0.10},
-    {"lower": 1_200_000,  "upper": 1_600_000, "rate": 0.15},
-    {"lower": 1_600_000,  "upper": 2_000_000, "rate": 0.20},
-    {"lower": 2_000_000,  "upper": 2_400_000, "rate": 0.25},
-    {"lower": 2_400_000,  "upper": math.inf,  "rate": 0.30},
+    {"lower": 0,          "upper": 300_000,   "rate": 0.00},
+    {"lower": 300_000,    "upper": 700_000,   "rate": 0.05},
+    {"lower": 700_000,    "upper": 1_000_000, "rate": 0.10},
+    {"lower": 1_000_000,  "upper": 1_200_000, "rate": 0.15},
+    {"lower": 1_200_000,  "upper": 1_500_000, "rate": 0.20},
+    {"lower": 1_500_000,  "upper": math.inf,  "rate": 0.30},
 ]
 
 # Rebate thresholds (Section 87A)
 REBATE_CONFIG = {
     "old": {"income_limit": 500_000,   "max_rebate": 12_500},
-    "new": {"income_limit": 1_200_000, "max_rebate": 60_000},
+    "new": {"income_limit": 700_000,   "max_rebate": 25_000},
 }
 
 CESS_RATE = 0.04
 
-# Standard deduction under new regime
-NEW_REGIME_STD_DEDUCTION = 50_000
+# Standard deduction under new regime (Budget 2024)
+NEW_REGIME_STD_DEDUCTION = 75_000
 
 
 # ---------------------------------------------------------------------------

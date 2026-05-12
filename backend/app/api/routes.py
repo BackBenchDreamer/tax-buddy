@@ -53,8 +53,10 @@ from app.core.database import (
 from ml.ocr.ocr_service import OCRService
 from ml.ner.ner_service import NERService
 from ml.ner.regex_utils import extract_fields as regex_extract_fields
+from ml.ner.regex_utils_26as import extract_fields_26as
 from app.services.validation_service import validate as run_validation
 from app.services.tax_service import compute_tax
+from app.services.itr_service import generate_itr
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +174,48 @@ async def extract(body: ExtractRequest):
 
 
 # ====================================================================== #
+# 2b. POST /extract-26as   (OCR → NER for Form 26AS)
+# ====================================================================== #
+
+@router.post("/extract-26as", response_model=ExtractResponse, tags=["pipeline"])
+async def extract_26as(body: ExtractRequest):
+    """OCR → NER pipeline for Form 26AS document."""
+    fp = pathlib.Path(body.file_path)
+    if not fp.exists():
+        raise HTTPException(status_code=400, detail=f"File not found: {fp}")
+
+    # OCR
+    log.info("[Extract-26AS] OCR starting: %s", fp)
+    try:
+        ocr_result = _get_ocr().extract(str(fp))
+    except Exception as exc:
+        log.error("[Extract-26AS] OCR failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(_structured_error("OCR", str(exc))))
+
+    raw_text: str = ocr_result.get("text", "")
+    log.info("[Extract-26AS] OCR done — %d chars", len(raw_text))
+
+    # Extract Form 26AS fields using specialized regex
+    log.info("[Extract-26AS] Extracting 26AS fields...")
+    try:
+        fields_26as = extract_fields_26as(raw_text)
+        entities = [
+            {"label": k, "value": str(v), "confidence": 0.95}
+            for k, v in fields_26as.items()
+            if k != "TDSEntries"  # Exclude nested structure from flat entity list
+        ]
+        log.info("[Extract-26AS] Extracted fields: %s", list(fields_26as.keys()))
+    except Exception as exc:
+        log.error("[Extract-26AS] Field extraction failed: %s", exc)
+        entities = []
+
+    return ExtractResponse(
+        text=raw_text,
+        entities=entities,
+    )
+
+
+# ====================================================================== #
 # 3. POST /validate
 # ====================================================================== #
 
@@ -212,25 +256,30 @@ async def compute_tax_endpoint(body: TaxRequest):
 # 5. POST /generate-itr
 # ====================================================================== #
 
-@router.post("/generate-itr", response_model=ITRResponse, tags=["itr"])
-async def generate_itr(body: ITRRequest):
-    """Assemble an ITR-1 (Sahaj) JSON structure."""
+@router.post("/generate-itr", tags=["itr"])
+async def generate_itr_endpoint(body: ITRRequest):
+    """Generate ITR form (ITR-1 or ITR-4) with JSON, PDF, and prefill text."""
     vd = body.validated_data
     tr = body.tax_result
-    log.info("[ITR] Building ITR-1 JSON for PAN=%s", vd.get("PAN", "?"))
-    return ITRResponse(
-        itr_form="ITR-1 (Sahaj)",
-        assessment_year=vd.get("AssessmentYear", ""),
-        pan=vd.get("PAN", ""),
-        name=vd.get("EmployeeName", vd.get("EmployerName", "")),
-        gross_total_income=float(vd.get("GrossSalary", 0)),
-        deductions=float(tr.get("deductions", 0)),
-        total_income=float(tr.get("taxable_income", 0)),
-        tax_payable=float(tr.get("total_tax", 0)),
-        tds=float(tr.get("tds_paid", 0)),
-        refund_or_payable=float(tr.get("refund_or_payable", 0)),
-        verification_status="pending",
-    )
+    log.info("[ITR] Generating ITR for PAN=%s", vd.get("PAN", "?"))
+    
+    try:
+        from app.services.itr_service import generate_itr as gen_itr
+        result = gen_itr(
+            validated_data=vd,
+            tax_result=tr,
+            form_type=None,  # Auto-select
+            presumptive_income=None,
+        )
+        log.info("[ITR] Generated %s", result["form_type"])
+        return {
+            "form_type": result["form_type"],
+            "itr_json": result["itr_json"],
+            "prefill_text": result["prefill_text"],
+        }
+    except Exception as exc:
+        log.error("[ITR] Generation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(_structured_error("ITR", str(exc))))
 
 
 # ====================================================================== #
