@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # ── Groq API ─────────────────────────────────────────────────────────
     GROQ_API_KEY: str = ""                      # Set in .env
-    GROQ_MODEL: str = "llama3-70b-8192"         # or "mixtral-8x7b-32768"
+    GROQ_MODEL: str = "llama-3.3-70b-versatile" # Current supported model
     GROQ_TIMEOUT: int = 30                      # seconds
 
     # ── CORS ─────────────────────────────────────────────────────────────

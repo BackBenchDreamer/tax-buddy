@@ -31,6 +31,10 @@ ENV/
 .env.bak
 .venv.bak
 
+# Virtual environments
+venv/
+.venv/
+
 # ── Environment & secrets ────────────────────────────────────────────────────
 .env
 .env.*
@@ -48,6 +52,9 @@ backend/data/outputs/
 *.pdf
 *.tiff
 *.tif
+
+# Uploaded files
+backend/data/uploads/
 
 # ── ML model weights & caches ────────────────────────────────────────────────
 *.pt
@@ -72,6 +79,10 @@ hf_cache/
 *.sqlite
 *.sqlite3
 
+# Database runtime files
+*.db-shm
+*.db-wal
+
 # ── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 logs/
@@ -86,6 +97,12 @@ htmlcov/
 .nox/
 nosetests.xml
 test-results/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
 
 # ── Type checking ────────────────────────────────────────────────────────────
 .mypy_cache/
@@ -134,6 +151,13 @@ yarn-error.log*
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 *.dockerignore
+
+# ── Documentation artifacts (prevent bloat) ──────────────────────────────────
+*_REPORT.md
+*_SUMMARY.md
+*_AUDIT.md
+*_IMPLEMENTATION.md
+PHASE*_*.md
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 *.bak

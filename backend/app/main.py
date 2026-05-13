@@ -45,6 +45,19 @@ app.add_middleware(
 # ── Router ───────────────────────────────────────────────────────────────────
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+# ── Root endpoint ────────────────────────────────────────────────────────
+@app.get("/", tags=["root"])
+async def root():
+    """Root endpoint - API information."""
+    return {
+        "service": settings.PROJECT_NAME,
+        "version": "1.0.0",
+        "status": "running",
+        "docs": "/docs",
+        "health": f"{settings.API_V1_STR}/system/health",
+        "api_prefix": settings.API_V1_STR,
+    }
+
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
 @app.on_event("startup")

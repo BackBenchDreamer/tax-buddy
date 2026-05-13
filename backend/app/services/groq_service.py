@@ -29,19 +29,59 @@ log = logging.getLogger(__name__)
 # Groq Client Initialization
 # ---------------------------------------------------------------------------
 
-def _get_groq_client():
-    """Get Groq client instance. Returns None if API key not configured."""
-    if not settings.GROQ_API_KEY:
+# Thread-local storage for user API keys
+import threading
+_thread_local = threading.local()
+
+
+def set_user_api_key(api_key: Optional[str]):
+    """Set API key for current request context (thread-local)."""
+    _thread_local.user_api_key = api_key
+
+
+def get_user_api_key() -> Optional[str]:
+    """Get API key from current request context."""
+    return getattr(_thread_local, 'user_api_key', None)
+
+
+def clear_user_api_key():
+    """Clear API key from current request context."""
+    if hasattr(_thread_local, 'user_api_key'):
+        delattr(_thread_local, 'user_api_key')
+
+
+def _get_groq_client(api_key: Optional[str] = None):
+    """Get Groq client instance. Returns None if API key not configured.
+    
+    Parameters
+    ----------
+    api_key : str, optional
+        User-provided API key. If None, checks thread-local storage, then falls back to settings.
+    """
+    # Priority: explicit parameter > thread-local > server config
+    effective_key = api_key or get_user_api_key() or settings.GROQ_API_KEY
+    
+    if not effective_key:
         log.warning("[Groq] API key not configured - AI assistance disabled")
         return None
     
     try:
         from groq import AsyncGroq
+        # Initialize with API key and timeout
         client = AsyncGroq(
-            api_key=settings.GROQ_API_KEY,
-            timeout=settings.GROQ_TIMEOUT,
+            api_key=effective_key,
+            timeout=float(settings.GROQ_TIMEOUT)
         )
-        log.info("[Groq] Client initialized with model=%s", settings.GROQ_MODEL)
+        
+        # Log source of API key (without exposing the key itself)
+        if api_key:
+            source = "user-provided"
+        elif get_user_api_key():
+            source = "session"
+        else:
+            source = "server-config"
+        
+        log.info("[Groq] Client initialized with model=%s (source=%s)", settings.GROQ_MODEL, source)
         return client
     except ImportError:
         log.error("[Groq] groq package not installed - run: pip install groq")
@@ -150,9 +190,10 @@ async def extract_entity_fallback(
 
 Text: "{text_block}"
 
-Return a JSON object with:
-- "value": the extracted {entity_type} (or null if not found)
-- "confidence": your confidence level (0.0 to 1.0)
+You must respond with ONLY a valid JSON object, nothing else. No markdown, no explanation.
+
+Format:
+{{"value": "extracted_value_or_null", "confidence": 0.95}}
 
 JSON:"""
     
@@ -169,15 +210,22 @@ JSON:"""
         
         result_text = response.choices[0].message.content.strip()
         
+        # Remove markdown code blocks if present
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+        
         # Parse JSON response
         try:
             result = json.loads(result_text)
             if result.get("value") and result.get("confidence", 0) > 0.5:
-                log.info("[Groq] Extracted %s: %s (conf=%.2f)", 
+                log.info("[Groq] Extracted %s: %s (conf=%.2f)",
                         entity_type, result["value"], result["confidence"])
                 return result
         except json.JSONDecodeError:
-            log.warning("[Groq] Invalid JSON response for %s", entity_type)
+            log.warning("[Groq] Invalid JSON response for %s: %s", entity_type, result_text[:100])
         
         return None
         
@@ -227,11 +275,12 @@ The following issues were found when cross-checking Form 16 and Form 26AS:
 
 {issues_text}
 
-For each issue, provide:
-1. What it means in simple terms
-2. What the user should do to fix it
+For each issue, provide a simple explanation and what to do.
 
-Format as JSON: {{"issue_type": "explanation", ...}}
+You must respond with ONLY a valid JSON object, nothing else. No markdown, no explanation.
+
+Format:
+{{"salary_mismatch": "Your Form 16 shows...", "tds_mismatch": "The TDS amount..."}}
 
 JSON:"""
     
@@ -248,12 +297,19 @@ JSON:"""
         
         result_text = response.choices[0].message.content.strip()
         
+        # Remove markdown code blocks if present
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+        
         try:
             explanations = json.loads(result_text)
             log.info("[Groq] Generated explanations for %d issues", len(explanations))
             return explanations
         except json.JSONDecodeError:
-            log.warning("[Groq] Invalid JSON response for explanations")
+            log.warning("[Groq] Invalid JSON response for explanations: %s", result_text[:100])
             return {}
         
     except asyncio.TimeoutError:
@@ -331,6 +387,74 @@ Recommendation:"""
     except Exception as exc:
         log.error("[Groq] Error generating recommendation: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# 5. API Key Testing
+# ---------------------------------------------------------------------------
+
+async def test_api_key(api_key: str) -> Dict[str, Any]:
+    """Test if an API key is valid by making a simple API call.
+    
+    Parameters
+    ----------
+    api_key : str
+        The API key to test
+    
+    Returns
+    -------
+    dict
+        {"valid": bool, "message": str, "model": str or None}
+    """
+    try:
+        from groq import AsyncGroq
+        
+        client = AsyncGroq(
+            api_key=api_key,
+            timeout=10.0  # Short timeout for testing
+        )
+        
+        # Make a minimal API call to test the key
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=settings.GROQ_MODEL,
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=5,
+            ),
+            timeout=10.0,
+        )
+        
+        log.info("[Groq] API key test successful")
+        return {
+            "valid": True,
+            "message": "API key is valid and working",
+            "model": settings.GROQ_MODEL
+        }
+        
+    except asyncio.TimeoutError:
+        log.error("[Groq] API key test timeout")
+        return {
+            "valid": False,
+            "message": "API request timed out",
+            "model": None
+        }
+    except Exception as exc:
+        error_msg = str(exc)
+        log.error("[Groq] API key test failed: %s", error_msg)
+        
+        # Provide user-friendly error messages
+        if "401" in error_msg or "authentication" in error_msg.lower():
+            message = "Invalid API key - please check your Groq API key"
+        elif "rate" in error_msg.lower() or "quota" in error_msg.lower():
+            message = "API rate limit exceeded - please try again later"
+        else:
+            message = f"API key test failed: {error_msg}"
+        
+        return {
+            "valid": False,
+            "message": message,
+            "model": None
+        }
 
 
 # ---------------------------------------------------------------------------

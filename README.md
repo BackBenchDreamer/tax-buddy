@@ -1,6 +1,22 @@
 # 🧾 Tax Buddy — AI-Powered Tax Filing Assistant
 
-> **OCR · NER · Validation · Tax Engine · ITR Generation · AI Assistance**  
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.136.1-009688.svg)](https://fastapi.tiangolo.com)
+[![Next.js](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
+[![Podman](https://img.shields.io/badge/Podman-Compatible-892CA0.svg)](https://podman.io/)
+
+## 🔄 CI/CD Status
+
+![CI Pipeline](https://github.com/USERNAME/tax-buddy/actions/workflows/ci.yml/badge.svg)
+![Security Scan](https://github.com/USERNAME/tax-buddy/actions/workflows/security.yml/badge.svg)
+![Code Quality](https://github.com/USERNAME/tax-buddy/actions/workflows/quality.yml/badge.svg)
+![Release](https://github.com/USERNAME/tax-buddy/actions/workflows/release.yml/badge.svg)
+
+> **Note:** Replace `USERNAME` with your GitHub username to activate badges.
+
+> **OCR · NER · Validation · Tax Engine · ITR Generation · AI Assistance**
 > Production-grade hybrid AI workflow for automated Indian income tax filing
 
 Tax Buddy is an end-to-end system that processes Form 16 and Form 26AS documents, validates data across both forms, computes income tax under both Old and New regimes, and generates ITR forms (ITR-1/ITR-4) — all in under 5 seconds.
@@ -73,7 +89,9 @@ Tax Buddy is an end-to-end system that processes Form 16 and Form 26AS documents
 | **Tesseract** | 5.x+ | macOS: `brew install tesseract` / Linux: `apt-get install tesseract-ocr` |
 | **Poppler** | latest | macOS: `brew install poppler` / Linux: `apt-get install poppler-utils` |
 
-### Option A: Docker (Recommended)
+### Option A: Docker/Podman (Recommended)
+
+#### Using Docker Compose
 
 ```bash
 git clone https://github.com/BackBenchDreamer/tax-buddy.git
@@ -88,6 +106,30 @@ docker-compose up --build
 # Backend: http://localhost:8000
 # Frontend: http://localhost:3000
 # API Docs: http://localhost:8000/docs
+```
+
+#### Using Podman Compose
+
+```bash
+git clone https://github.com/BackBenchDreamer/tax-buddy.git
+cd tax-buddy
+
+# Set Groq API key (optional, for AI features)
+export GROQ_API_KEY=your_key_here
+
+# Start both backend and frontend
+podman-compose up --build
+
+# Backend: http://localhost:8000
+# Frontend: http://localhost:3000
+# API Docs: http://localhost:8000/docs
+```
+
+**Clean rebuild with Podman:**
+```bash
+# Use the provided script for a complete clean rebuild
+chmod +x rebuild-podman.sh
+./rebuild-podman.sh
 ```
 
 ### Option B: Local Development
@@ -442,11 +484,24 @@ rm backend/data/taxbuddy.db*
 
 ## 🤝 Contributing
 
-1. Clone repo
-2. Create feature branch
-3. Make changes
-4. Run tests: `pytest`
-5. Submit PR
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on:
+
+- Code style and standards
+- Development setup
+- Testing requirements
+- Pull request process
+- Issue reporting
+
+**Quick Start for Contributors:**
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature-name`
+3. Make your changes and add tests
+4. Run tests: `cd backend && pytest tests/ -v`
+5. Commit with clear messages: `git commit -m "feat: add new feature"`
+6. Push and create a Pull Request
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for complete details.
 
 ---
 

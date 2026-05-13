@@ -239,19 +239,83 @@ def extract_employer_name(text: str, part_a: str) -> Optional[str]:
     return None
 
 
-def extract_employee_name(text: str) -> Optional[str]:
-    """Extract employee name."""
-    patterns = [
-        r"Name\s+and\s+address\s+of\s+the\s+Employee[^\n]*\n\s*([A-Z][A-Za-z ]{5,60})",
-        r"Name.*?(?:Employee|Deductee)\s*[:\-]\s*([A-Za-z][A-Za-z ]{5,60})",
-        r"employee\s*[:\-]\s*([A-Za-z][A-Za-z ]{5,60})",
+def extract_employee_name(text: str, part_a: str) -> Optional[str]:
+    """Extract employee name with enhanced disambiguation.
+    
+    Strategy:
+    1. Look for "Name and address of the Employee" section
+    2. Extract name from next line (not same line as employer)
+    3. Avoid company keywords (LIMITED, PVT, LTD, TECHNOLOGIES, SERVICES, etc.)
+    4. Prefer Title Case over ALL CAPS (employees rarely in all caps)
+    5. Look near PAN number (employee's PAN)
+    """
+    # Company keywords to avoid
+    COMPANY_KEYWORDS = [
+        'LIMITED', 'LTD', 'PRIVATE', 'PVT', 'TECHNOLOGIES', 'TECHNOLOGY',
+        'SERVICES', 'SERVICE', 'SOLUTIONS', 'SYSTEMS', 'CORPORATION',
+        'ENTERPRISES', 'INDUSTRIES', 'COMPANY', 'CO.', 'INC', 'INCORPORATED'
     ]
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
+    
+    def is_company_name(name: str) -> bool:
+        """Check if name contains company keywords."""
+        name_upper = name.upper()
+        return any(kw in name_upper for kw in COMPANY_KEYWORDS)
+    
+    def is_valid_person_name(name: str) -> bool:
+        """Validate if this looks like a person's name."""
+        if len(name) < 3 or len(name) > 60:
+            return False
+        if is_company_name(name):
+            return False
+        # Person names typically have 2-4 words
+        words = name.split()
+        if len(words) < 2 or len(words) > 4:
+            return False
+        return True
+    
+    # Pattern 1: After "Name and address of the Employee" label, next line
+    # This is the most reliable pattern in Form 16
+    patterns_priority = [
+        r"Name\s+and\s+address\s+of\s+the\s+Employee[^\n]*\n\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        r"Name\s+of\s+(?:the\s+)?Employee\s*[:\-]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        r"Employee\s+Name\s*[:\-]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+    ]
+    
+    for pat in patterns_priority:
+        m = re.search(pat, part_a, re.IGNORECASE)
         if m:
             name = m.group(1).strip()
-            if len(name) > 3:
+            if is_valid_person_name(name):
+                log.info("[EXTRACT] EmployeeName (priority pattern): %s", name)
                 return name
+    
+    # Pattern 2: Look for name near PAN (employee's PAN is usually near their name)
+    pan_match = re.search(r"PAN\s+of\s+(?:the\s+)?(?:Employee|Deductee)[^A-Z]*([A-Z]{5}[0-9]{4}[A-Z])", part_a, re.IGNORECASE)
+    if pan_match:
+        # Search backwards from PAN for a person name
+        text_before_pan = part_a[:pan_match.start()]
+        # Look in last 200 chars before PAN
+        search_window = text_before_pan[-200:] if len(text_before_pan) > 200 else text_before_pan
+        # Find Title Case names (typical for person names)
+        name_pattern = r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})"
+        matches = list(re.finditer(name_pattern, search_window))
+        if matches:
+            # Take the last match (closest to PAN)
+            name = matches[-1].group(1).strip()
+            if is_valid_person_name(name):
+                log.info("[EXTRACT] EmployeeName (near PAN): %s", name)
+                return name
+    
+    # Pattern 3: Fallback - look for any Title Case name that's not a company
+    # Search in PART A only to avoid confusion with other sections
+    name_pattern = r"\b([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"
+    for match in re.finditer(name_pattern, part_a):
+        name = match.group(1).strip()
+        if is_valid_person_name(name):
+            log.info("[EXTRACT] EmployeeName (fallback Title Case): %s", name)
+            return name
+    
+    log.warning("[EXTRACT] EmployeeName not found")
     return None
 
 
@@ -390,35 +454,168 @@ def extract_tds(text: str, part_a: str, part_b: str) -> Optional[float]:
     return None
 
 
-def extract_section80c(text: str, part_b: str) -> Optional[float]:
-    """Extract Section 80C deduction from PART B."""
-    val = _find_amount_on_same_line(
+def extract_all_deductions(text: str, part_b: str) -> Dict[str, float]:
+    """Extract ALL deduction sections with comprehensive aggregation.
+    
+    Returns a structured dict with section-wise breakdown:
+    {
+        "Section80C": float,
+        "Section80CCD1B": float,
+        "Section80D": float,
+        "Section80E": float,
+        "Section80G": float,
+        "Section80TTA": float,
+        "TotalDeductions": float
+    }
+    
+    Strategy:
+    1. For Section 80C: aggregate all sub-items (LIC, PPF, PF, ELSS, etc.)
+    2. Look for both individual line items AND aggregate totals
+    3. Use the aggregate total if available, otherwise sum line items
+    4. Extract all other 80-series sections
+    """
+    deductions: Dict[str, float] = {}
+    
+    # ========== SECTION 80C ==========
+    # Try to find the aggregate total first (most reliable)
+    total_80c = _find_amount_on_same_line(
         part_b,
         r"Total\s+deduction\s+under\s+section\s+80C",
         r"Aggregate.*80C",
+        r"Deduction\s+under\s+section\s+80C",
         min_val=1000,
     )
+    
+    if total_80c:
+        deductions["Section80C"] = total_80c
+        log.info("[EXTRACT] Section80C (aggregate total): %.0f", total_80c)
+    else:
+        # Fallback: aggregate individual 80C sub-items
+        section_80c_items = []
+        keywords_80c = [
+            r"Life\s+Insurance\s+Premium",
+            r"Provident\s+Fund",
+            r"PPF",
+            r"ELSS",
+            r"NSC",
+            r"National\s+Savings\s+Certificate",
+            r"Tax\s+[Ss]aving\s+(?:Fixed\s+)?Deposit",
+            r"Tuition\s+[Ff]ees",
+            r"Principal\s+repayment.*housing\s+loan",
+            r"Home\s+Loan\s+Principal",
+            r"Sukanya\s+Samriddhi",
+        ]
+        
+        for kw in keywords_80c:
+            amounts = _find_all_amounts_on_line(part_b, kw)
+            if amounts:
+                log.info("[EXTRACT] Section80C sub-item (%s): %s", kw, amounts)
+                section_80c_items.extend(amounts)
+        
+        if section_80c_items:
+            total = sum(section_80c_items)
+            deductions["Section80C"] = total
+            log.info("[EXTRACT] Section80C (sum of %d items): %.0f", len(section_80c_items), total)
+        else:
+            # Last resort: generic 80C search
+            val = _find_amount_on_same_line(text, r"section\s+80C\b", r"\b80C\b", min_val=1000)
+            if val:
+                deductions["Section80C"] = val
+                log.info("[EXTRACT] Section80C (generic fallback): %.0f", val)
+    
+    # ========== SECTION 80CCD(1B) ==========
+    # NPS additional deduction (up to ₹50,000)
+    val = _find_amount_on_same_line(
+        part_b,
+        r"80CCD\(1B\)",
+        r"80CCD\s*\(?\s*1\s*B\s*\)?",
+        r"NPS.*additional",
+        min_val=100,
+    )
     if val:
-        log.info("[EXTRACT] Section80C (PART B): %.0f", val)
-        return val
-    val = _find_amount_on_same_line(text, r"section\s+80C\b", r"\b80C\b", min_val=1000)
-    if val:
-        log.info("[EXTRACT] Section80C (fallback): %.0f", val)
-    return val
-
-
-def extract_section80d(text: str, part_b: str) -> Optional[float]:
-    """Extract Section 80D deduction (health insurance) from PART B."""
+        deductions["Section80CCD1B"] = val
+        log.info("[EXTRACT] Section80CCD1B (NPS additional): %.0f", val)
+    
+    # ========== SECTION 80D ==========
+    # Health insurance premium
     val = _find_amount_on_same_line(
         part_b,
         r"health\s+insurance\s+premia\s+under\s+section\s+80D",
+        r"Medical\s+insurance.*80D",
         r"section\s+80D\b",
         r"\b80D\b",
-        min_val=500,
+        min_val=100,
     )
     if val:
-        log.info("[EXTRACT] Section80D (PART B): %.0f", val)
-    return val
+        deductions["Section80D"] = val
+        log.info("[EXTRACT] Section80D (health insurance): %.0f", val)
+    
+    # ========== SECTION 80E ==========
+    # Education loan interest
+    val = _find_amount_on_same_line(
+        part_b,
+        r"Interest.*education\s+loan.*80E",
+        r"section\s+80E\b",
+        r"\b80E\b",
+        min_val=100,
+    )
+    if val:
+        deductions["Section80E"] = val
+        log.info("[EXTRACT] Section80E (education loan): %.0f", val)
+    
+    # ========== SECTION 80G ==========
+    # Donations
+    val = _find_amount_on_same_line(
+        part_b,
+        r"Donation.*80G",
+        r"section\s+80G\b",
+        r"\b80G\b",
+        min_val=100,
+    )
+    if val:
+        deductions["Section80G"] = val
+        log.info("[EXTRACT] Section80G (donations): %.0f", val)
+    
+    # ========== SECTION 80TTA ==========
+    # Interest on savings account
+    val = _find_amount_on_same_line(
+        part_b,
+        r"Interest.*savings.*80TTA",
+        r"section\s+80TTA\b",
+        r"\b80TTA\b",
+        min_val=100,
+    )
+    if val:
+        deductions["Section80TTA"] = val
+        log.info("[EXTRACT] Section80TTA (savings interest): %.0f", val)
+    
+    # Calculate total deductions
+    total = sum(deductions.values())
+    if total > 0:
+        deductions["TotalDeductions"] = total
+        log.info("[EXTRACT] TotalDeductions (sum of all sections): %.0f", total)
+    
+    return deductions
+
+
+def extract_section80c(text: str, part_b: str) -> Optional[float]:
+    """Extract Section 80C deduction from PART B.
+    
+    DEPRECATED: Use extract_all_deductions() for comprehensive extraction.
+    Kept for backward compatibility.
+    """
+    deductions = extract_all_deductions(text, part_b)
+    return deductions.get("Section80C")
+
+
+def extract_section80d(text: str, part_b: str) -> Optional[float]:
+    """Extract Section 80D deduction (health insurance) from PART B.
+    
+    DEPRECATED: Use extract_all_deductions() for comprehensive extraction.
+    Kept for backward compatibility.
+    """
+    deductions = extract_all_deductions(text, part_b)
+    return deductions.get("Section80D")
 
 
 def extract_tax_on_income(text: str, part_b: str) -> Optional[float]:
@@ -458,6 +655,11 @@ def extract_fields(text: str) -> Dict[str, Any]:
 
     This is the PRIMARY extraction interface. Returns only non-None values.
     Uses section-based parsing for higher accuracy.
+    
+    Enhanced in Phase 1:
+    - Fixed employee name extraction with company keyword filtering
+    - Comprehensive deduction extraction (all 80-series sections)
+    - Structured deductions with section-wise breakdown
     """
     log.info("[NER-Regex] Running section-aware field extraction …")
 
@@ -469,13 +671,15 @@ def extract_fields(text: str) -> Dict[str, Any]:
     tan            = extract_tan(full, part_a)
     ay             = extract_assessment_year(full, part_a)
     employer       = extract_employer_name(full, part_a)
-    employee       = extract_employee_name(full)
+    employee       = extract_employee_name(full, part_a)  # Fixed: now passes part_a
     gross_salary   = extract_gross_salary(full, part_b)
     gross_total    = extract_gross_total_income(full, part_b)
     taxable_income = extract_taxable_income(full, part_b)
     tds            = extract_tds(full, part_a, part_b)
-    s80c           = extract_section80c(full, part_b)
-    s80d           = extract_section80d(full, part_b)
+    
+    # Enhanced: Extract ALL deductions with section-wise breakdown
+    all_deductions = extract_all_deductions(full, part_b)
+    
     tax_on_income  = extract_tax_on_income(full, part_b)
     cess           = extract_cess(full, part_b)
 
@@ -489,8 +693,22 @@ def extract_fields(text: str) -> Dict[str, Any]:
     if gross_total:    fields["GrossTotalIncome"]  = gross_total
     if taxable_income: fields["TaxableIncome"]    = taxable_income
     if tds:            fields["TDS"]              = tds
-    if s80c:           fields["Section80C"]       = s80c
-    if s80d:           fields["Section80D"]       = s80d
+    
+    # Add all deduction sections
+    for section, amount in all_deductions.items():
+        if amount > 0:
+            fields[section] = amount
+    
+    # Maintain backward compatibility: also set individual section fields
+    if "Section80C" in all_deductions:
+        fields["Section80C"] = all_deductions["Section80C"]
+    if "Section80D" in all_deductions:
+        fields["Section80D"] = all_deductions["Section80D"]
+    
+    # Set total deductions for tax computation
+    if "TotalDeductions" in all_deductions:
+        fields["Deductions"] = all_deductions["TotalDeductions"]
+    
     if tax_on_income:  fields["TaxOnIncome"]      = tax_on_income
     if cess:           fields["Cess"]             = cess
 

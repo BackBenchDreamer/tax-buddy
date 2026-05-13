@@ -12,7 +12,8 @@ import { TaxExplanation } from '@/components/TaxExplanation';
 import { Charts } from '@/components/Charts';
 import { processDocument, computeTax, downloadTaxReport, APIError } from '@/lib/api';
 import { ProcessResponse, TaxResult } from '@/types';
-import { Zap, FileText, Download } from 'lucide-react';
+import { Zap, FileText, Download, Settings as SettingsIcon } from 'lucide-react';
+import Link from 'next/link';
 
 type AppState = 'idle' | 'processing' | 'results';
 
@@ -128,6 +129,14 @@ export default function Home() {
                 </button>
               </>
             )}
+            <Link
+              href="/settings"
+              className="text-xs font-semibold px-3 py-2 rounded-lg bg-slate-800/50 hover:bg-slate-700/50 border border-slate-700/50 transition-colors flex items-center gap-2"
+              title="Settings"
+            >
+              <SettingsIcon className="w-4 h-4" />
+              <span className="hidden sm:inline">Settings</span>
+            </Link>
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-xs text-slate-500 hidden sm:inline">AI Engine Active</span>

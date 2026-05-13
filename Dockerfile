@@ -31,9 +31,7 @@ RUN useradd -m -u 1000 appuser
 # ── Python environment ────────────────────────────────────────────────────────
 WORKDIR /app
 
-# Create virtual environment inside container
-RUN python -m venv /app/venv
-ENV PATH="/app/venv/bin:$PATH"
+# Use system Python directly inside the container
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -41,8 +39,8 @@ ENV PYTHONUNBUFFERED=1
 # ── Install Python dependencies ───────────────────────────────────────────────
 COPY backend/requirements.txt ./requirements.txt
 
-RUN /app/venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /app/venv/bin/pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip && \
+    python -m pip install --no-cache-dir -r requirements.txt
 
 # ── Application code ──────────────────────────────────────────────────────────
 COPY backend/ ./
@@ -89,9 +87,9 @@ EXPOSE 8000
 
 # ── Health check ──────────────────────────────────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD /app/venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/system/health')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/system/health')"
 
 # ── Start application ─────────────────────────────────────────────────────────
-CMD ["/app/venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
 
 # Made with Bob

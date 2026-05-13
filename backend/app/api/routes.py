@@ -32,12 +32,19 @@ from typing import Any, Dict
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.schemas.schemas import (
+    AIValidationRequest,
+    AIValidationResponse,
+    ApiKeyRequest,
+    ApiKeyStatusResponse,
+    ApiKeyTestResponse,
     ExtractRequest,
     ExtractResponse,
     FileUploadResponse,
     ITRRequest,
     ITRResponse,
+    OptimizeTaxRequest,
     ProcessResponse,
+    TaxOptimizationResponse,
     TaxRequest,
     TaxResponse,
     ValidationRequest,
@@ -283,7 +290,92 @@ async def generate_itr_endpoint(body: ITRRequest):
 
 
 # ====================================================================== #
-# 6. POST /process   (END-TO-END)
+# 6. POST /validate-with-ai   (AI Validation)
+# ====================================================================== #
+
+@router.post("/validate-with-ai", response_model=AIValidationResponse, tags=["ai"])
+async def validate_with_ai(body: AIValidationRequest):
+    """
+    Validate extracted fields using AI (Groq LLM).
+    
+    This endpoint uses AI to:
+    - Validate employee vs employer name
+    - Check PAN format and consistency
+    - Verify amount calculations
+    - Validate deduction totals
+    
+    Returns validation results with confidence scores and suggested corrections.
+    """
+    log.info("[AI-Validate] Starting AI validation for %d fields", len(body.extracted_fields))
+    
+    try:
+        from app.services.ai_validation_service import validate_extracted_fields
+        
+        result = await validate_extracted_fields(
+            extracted_fields=body.extracted_fields,
+            ocr_text=body.ocr_text,
+            enable_ai=body.enable_ai
+        )
+        
+        log.info("[AI-Validate] Completed: %d validations, %d corrections, %d flags",
+                 result["summary"]["validated"],
+                 result["summary"]["corrected"],
+                 result["summary"]["flagged"])
+        
+        return AIValidationResponse(**result)
+        
+    except Exception as exc:
+        log.error("[AI-Validate] Validation failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=str(_structured_error("AI-Validation", str(exc)))
+        )
+
+
+# ====================================================================== #
+# 7. POST /optimize-tax   (Tax Optimization with AI)
+# ====================================================================== #
+
+@router.post("/optimize-tax", response_model=TaxOptimizationResponse, tags=["optimization"])
+async def optimize_tax_endpoint(body: OptimizeTaxRequest):
+    """
+    Generate AI-powered tax optimization suggestions.
+    
+    Analyzes the taxpayer's situation and provides:
+    - Old vs New regime recommendation with reasoning
+    - Deduction optimization suggestions
+    - Investment recommendations for tax savings
+    - Potential savings calculations
+    
+    Uses Groq LLM for intelligent, context-aware suggestions.
+    """
+    log.info("[TaxOptimization] Starting optimization analysis")
+    
+    try:
+        from app.services.tax_optimization_service import optimize_tax
+        
+        result = await optimize_tax(
+            validated_data=body.validated_data,
+            tax_result=body.tax_result,
+            ocr_text=body.ocr_text,
+        )
+        
+        log.info("[TaxOptimization] Completed: %d suggestions, ₹%.0f potential savings",
+                 len(result.get("suggestions", [])),
+                 result.get("potential_savings", 0))
+        
+        return TaxOptimizationResponse(**result)
+        
+    except Exception as exc:
+        log.error("[TaxOptimization] Optimization failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=str(_structured_error("TaxOptimization", str(exc)))
+        )
+
+
+# ====================================================================== #
+# 8. POST /process   (END-TO-END)
 # ====================================================================== #
 
 @router.post("/process", response_model=ProcessResponse, tags=["pipeline"])
@@ -355,6 +447,41 @@ async def process_pipeline(file: UploadFile = File(...)):
                 ]
 
             log.debug("[Process] entity_map: %s", entity_map)
+
+            # ── AI Validation (Phase 2) ───────────────────────────────────────────
+            start_time = time.time()
+            ai_validation_result = None
+            try:
+                from app.services.ai_validation_service import (
+                    validate_extracted_fields,
+                    apply_corrections
+                )
+                
+                # Run AI validation
+                ai_validation_result = await validate_extracted_fields(
+                    extracted_fields=entity_map,
+                    ocr_text=raw_text,
+                    enable_ai=True  # Can be made configurable via query param
+                )
+                
+                ai_elapsed = time.time() - start_time
+                log.info("[Process] AI Validation — validated=%d corrected=%d flagged=%d, time=%.3fs",
+                         ai_validation_result["summary"]["validated"],
+                         ai_validation_result["summary"]["corrected"],
+                         ai_validation_result["summary"]["flagged"],
+                         ai_elapsed)
+                
+                # Apply high-confidence corrections
+                if ai_validation_result["corrections_applied"]:
+                    entity_map = apply_corrections(entity_map, ai_validation_result)
+                    log.info("[Process] Applied %d AI corrections to entity_map",
+                             len(ai_validation_result["corrections_applied"]))
+                
+            except Exception as exc:
+                ai_elapsed = time.time() - start_time
+                log.warning("[Process] AI Validation failed after %.3fs (%s) — continuing without AI validation",
+                           ai_elapsed, exc)
+                ai_validation_result = None
 
             # ── Validation ────────────────────────────────────────────────────────
             start_time = time.time()
@@ -449,6 +576,33 @@ async def process_pipeline(file: UploadFile = File(...)):
             tax_elapsed = time.time() - start_time
             log.info("[Process] Tax completed in %.3fs", tax_elapsed)
 
+            # ── Tax Optimization (Phase 3) ────────────────────────────────────────
+            start_time = time.time()
+            optimization_result = None
+            
+            # Only run optimization if tax computation succeeded
+            if tax_result:
+                try:
+                    from app.services.tax_optimization_service import optimize_tax
+                    
+                    optimization_result = await optimize_tax(
+                        validated_data=entity_map,
+                        tax_result=tax_result,
+                        ocr_text=raw_text,
+                    )
+                    
+                    opt_elapsed = time.time() - start_time
+                    log.info("[Process] Tax Optimization — %d suggestions, ₹%.0f savings, time=%.3fs",
+                             len(optimization_result.get("suggestions", [])),
+                             optimization_result.get("potential_savings", 0),
+                             opt_elapsed)
+                    
+                except Exception as exc:
+                    opt_elapsed = time.time() - start_time
+                    log.warning("[Process] Tax Optimization failed after %.3fs (%s) — continuing without optimization",
+                               opt_elapsed, exc)
+                    optimization_result = None
+
             # ── BUILD RESPONSE (NO BLOCKING I/O) ──────────────────────────────────
             response = ProcessResponse(
                 file_id=file_id,
@@ -456,6 +610,8 @@ async def process_pipeline(file: UploadFile = File(...)):
                 entities=entities,
                 validation=val_result_dict,
                 tax=tax_result,
+                ai_validation=ai_validation_result,
+                optimization=optimization_result,
             )
 
             total_elapsed = time.time() - start_total
@@ -756,6 +912,140 @@ async def generate_report(body: _ReportRequest):
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=tax-buddy-report.pdf"},
     )
+
+
+# ====================================================================== #
+# 9. API Key Management
+# ====================================================================== #
+
+@router.post("/config/api-key", response_model=ApiKeyTestResponse, tags=["config"])
+async def set_api_key(body: ApiKeyRequest):
+    """
+    Set user's Groq API key for the current session.
+    
+    The key is stored in thread-local storage and used for all AI operations
+    in the current request context. It is NOT persisted to disk or database.
+    
+    Security:
+    - Key is validated before acceptance
+    - Key is never logged or exposed in responses
+    - Key is cleared when session ends
+    """
+    log.info("[Config] Setting user API key")
+    
+    # Validate the API key by testing it
+    try:
+        from app.services.groq_service import test_api_key, set_user_api_key
+        
+        # Test the key first
+        test_result = await test_api_key(body.api_key)
+        
+        if not test_result["valid"]:
+            log.warning("[Config] Invalid API key provided")
+            raise HTTPException(
+                status_code=400,
+                detail=test_result["message"]
+            )
+        
+        # If valid, store it in thread-local storage
+        set_user_api_key(body.api_key)
+        
+        log.info("[Config] User API key validated and stored")
+        return ApiKeyTestResponse(
+            valid=True,
+            message="API key configured successfully",
+            model=test_result["model"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("[Config] Failed to set API key: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to configure API key: {str(exc)}"
+        )
+
+
+@router.get("/config/api-key/status", response_model=ApiKeyStatusResponse, tags=["config"])
+async def get_api_key_status():
+    """
+    Check if an API key is configured and its source.
+    
+    Returns:
+    - configured: Whether any API key is available
+    - source: 'user' (session), 'server' (env var), or 'none'
+    - model: Current Groq model being used
+    """
+    from app.services.groq_service import get_user_api_key
+    
+    user_key = get_user_api_key()
+    server_key = settings.GROQ_API_KEY
+    
+    if user_key:
+        source = "user"
+        configured = True
+    elif server_key:
+        source = "server"
+        configured = True
+    else:
+        source = "none"
+        configured = False
+    
+    log.info("[Config] API key status check: source=%s", source)
+    
+    return ApiKeyStatusResponse(
+        configured=configured,
+        source=source,
+        model=settings.GROQ_MODEL if configured else None
+    )
+
+
+@router.delete("/config/api-key", tags=["config"])
+async def clear_api_key():
+    """
+    Clear user's API key from the current session.
+    
+    This removes the user-provided key from thread-local storage.
+    Server-configured keys (from .env) are not affected.
+    """
+    from app.services.groq_service import clear_user_api_key, get_user_api_key
+    
+    had_key = get_user_api_key() is not None
+    clear_user_api_key()
+    
+    if had_key:
+        log.info("[Config] User API key cleared")
+        return {"message": "API key cleared successfully"}
+    else:
+        log.info("[Config] No user API key to clear")
+        return {"message": "No user API key was configured"}
+
+
+@router.post("/config/api-key/test", response_model=ApiKeyTestResponse, tags=["config"])
+async def test_api_key_endpoint(body: ApiKeyRequest):
+    """
+    Test an API key without storing it.
+    
+    Useful for validating a key before the user decides to save it.
+    The key is NOT stored - only tested.
+    """
+    log.info("[Config] Testing API key")
+    
+    try:
+        from app.services.groq_service import test_api_key
+        
+        result = await test_api_key(body.api_key)
+        
+        log.info("[Config] API key test result: valid=%s", result["valid"])
+        return ApiKeyTestResponse(**result)
+        
+    except Exception as exc:
+        log.error("[Config] API key test failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to test API key: {str(exc)}"
+        )
 
 
 # ====================================================================== #

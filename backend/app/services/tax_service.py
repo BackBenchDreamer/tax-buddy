@@ -255,28 +255,65 @@ def compute_tax(data: Dict[str, Any]) -> Dict[str, Any]:
                 "Deductions": float,        # total deductions (old regime)
                 "TaxableIncome": float,      # optional — will recompute
                 "TDS": float,
-                "Regime": "old" | "new"
+                "Regime": "old" | "new",
+                
+                # Optional: Section-wise deduction breakdown (Phase 1 enhancement)
+                "Section80C": float,
+                "Section80CCD1B": float,
+                "Section80D": float,
+                "Section80E": float,
+                "Section80G": float,
+                "TotalDeductions": float
             }
 
     Returns
     -------
     dict
         Full computation result with breakdown, refund / payable, etc.
+        Enhanced with deduction breakdown if available.
     """
     gross = float(data.get("GrossSalary", 0))
-    deductions = float(data.get("Deductions", 0))
+    
+    # Support both old format (single "Deductions") and new format (structured)
+    # Priority: TotalDeductions > Deductions > sum of individual sections
+    deductions = float(data.get("TotalDeductions", 0))
+    if deductions == 0:
+        deductions = float(data.get("Deductions", 0))
+    if deductions == 0:
+        # Fallback: sum individual sections
+        deductions = (
+            float(data.get("Section80C", 0)) +
+            float(data.get("Section80CCD1B", 0)) +
+            float(data.get("Section80D", 0)) +
+            float(data.get("Section80E", 0)) +
+            float(data.get("Section80G", 0)) +
+            float(data.get("Section80TTA", 0))
+        )
+    
     tds = float(data.get("TDS", 0))
     regime = str(data.get("Regime", "old")).lower()
+
+    # Extract section-wise breakdown for enhanced reporting
+    deduction_breakdown = {}
+    for section in ["Section80C", "Section80CCD1B", "Section80D", "Section80E", "Section80G", "Section80TTA"]:
+        if section in data and data[section]:
+            deduction_breakdown[section] = float(data[section])
 
     log.info(
         "Computing tax — regime=%s, gross=%.0f, deductions=%.0f, TDS=%.0f",
         regime, gross, deductions, tds,
     )
+    if deduction_breakdown:
+        log.info("Deduction breakdown: %s", deduction_breakdown)
 
     if regime == "new":
         result = compute_new_regime(gross)
     else:
         result = compute_old_regime(gross, deductions)
+
+    # Add deduction breakdown to result for transparency
+    if deduction_breakdown:
+        result["deduction_breakdown"] = deduction_breakdown
 
     # Refund vs. payable
     refund_or_payable = round(tds - result["total_tax"], 2)
