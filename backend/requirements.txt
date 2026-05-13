@@ -10,7 +10,7 @@ uvloop==0.22.1
 python-multipart==0.0.26
 
 # Configuration & Validation
-pydantic==2.13.3
+pydantic==2.13.4
 pydantic-settings==2.14.0
 python-dotenv==1.2.2
 
