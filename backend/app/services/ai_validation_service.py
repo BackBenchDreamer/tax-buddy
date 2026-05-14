@@ -132,7 +132,12 @@ JSON:"""
             timeout=timeout,
         )
         
-        result_text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            log.warning("[AI Validation] Empty response from Groq")
+            return {"is_employee": True, "confidence": 0.5, "correct_employee_name": None}
+        
+        result_text = content.strip()
         result = json.loads(result_text)
         
         is_employee = result.get("is_employee", True)
@@ -254,7 +259,12 @@ JSON:"""
             timeout=timeout,
         )
         
-        result_text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            log.warning("[AI Validation] Empty response from Groq for PAN validation")
+            return {"is_valid_format": True, "confidence": 0.5, "corrected_pan": None, "action": "accept"}
+        
+        result_text = content.strip()
         result = json.loads(result_text)
         
         is_valid = result.get("is_valid_format", True)
@@ -355,7 +365,12 @@ JSON:"""
             timeout=timeout,
         )
         
-        result_text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            log.warning("[AI Validation] Empty response from Groq for amount validation")
+            return []
+        
+        result_text = content.strip()
         results = json.loads(result_text)
         
         validations = []
@@ -464,7 +479,12 @@ JSON:"""
             timeout=timeout,
         )
         
-        result_text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            log.warning("[AI Validation] Empty response from Groq for deduction validation")
+            return {"is_valid": True, "confidence": 0.5, "reasoning": "No AI response"}
+        
+        result_text = content.strip()
         result = json.loads(result_text)
         
         is_correct = result.get("is_correct", True)

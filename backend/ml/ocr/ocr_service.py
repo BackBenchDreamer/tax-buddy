@@ -31,15 +31,17 @@ from app.core.config import settings
 
 # PDF text extraction libraries
 try:
-    import pdfplumber
+    import pdfplumber  # type: ignore
     PDFPLUMBER_AVAILABLE = True
 except ImportError:
+    pdfplumber = None  # type: ignore
     PDFPLUMBER_AVAILABLE = False
 
 try:
-    import fitz  # PyMuPDF
+    import fitz  # type: ignore  # PyMuPDF
     PYMUPDF_AVAILABLE = True
 except ImportError:
+    fitz = None  # type: ignore
     PYMUPDF_AVAILABLE = False
 
 log = logging.getLogger(__name__)
@@ -71,6 +73,8 @@ class OCRService:
         if not PDFPLUMBER_AVAILABLE:
             return None
         try:
+            if pdfplumber is None:
+                return None
             with pdfplumber.open(pdf_path) as pdf:
                 text_parts = []
                 for page in pdf.pages:
@@ -94,6 +98,8 @@ class OCRService:
         if not PYMUPDF_AVAILABLE:
             return None
         try:
+            if fitz is None:
+                return None
             doc = fitz.open(pdf_path)
             text_parts = []
             for page in doc:

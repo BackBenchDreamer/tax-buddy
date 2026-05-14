@@ -143,7 +143,12 @@ Value:"""
             timeout=settings.GROQ_TIMEOUT,
         )
         
-        result = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            log.warning("[Groq] Empty response for field: %s", field_name)
+            return None
+        
+        result = content.strip()
         
         if result == "UNABLE_TO_RESOLVE" or not result:
             log.warning("[Groq] Could not resolve field: %s", field_name)
@@ -208,7 +213,12 @@ JSON:"""
             timeout=settings.GROQ_TIMEOUT,
         )
         
-        result_text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            log.warning("[Groq] Empty response for entity extraction: %s", entity_type)
+            return None
+        
+        result_text = content.strip()
         
         # Remove markdown code blocks if present
         if result_text.startswith("```"):
@@ -295,7 +305,12 @@ JSON:"""
             timeout=settings.GROQ_TIMEOUT,
         )
         
-        result_text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            log.warning("[Groq] Empty response for validation explanation")
+            return {}
+        
+        result_text = content.strip()
         
         # Remove markdown code blocks if present
         if result_text.startswith("```"):
@@ -377,7 +392,12 @@ Recommendation:"""
             timeout=settings.GROQ_TIMEOUT,
         )
         
-        recommendation = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            log.warning("[Groq] Empty response for tax recommendation")
+            return "Unable to generate recommendation."
+        
+        recommendation = content.strip()
         log.info("[Groq] Generated regime recommendation (%d chars)", len(recommendation))
         return recommendation
         
