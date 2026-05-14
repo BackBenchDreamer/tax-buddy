@@ -27,7 +27,7 @@ import logging
 import pathlib
 import shutil
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
@@ -37,6 +37,7 @@ from app.schemas.schemas import (
     ApiKeyRequest,
     ApiKeyStatusResponse,
     ApiKeyTestResponse,
+    EntityItem,
     ExtractRequest,
     ExtractResponse,
     FileUploadResponse,
@@ -47,6 +48,7 @@ from app.schemas.schemas import (
     TaxOptimizationResponse,
     TaxRequest,
     TaxResponse,
+    ValidationIssueSchema,
     ValidationRequest,
     ValidationResponse,
 )
@@ -206,8 +208,8 @@ async def extract_26as(body: ExtractRequest):
     log.info("[Extract-26AS] Extracting 26AS fields...")
     try:
         fields_26as = extract_fields_26as(raw_text)
-        entities = [
-            {"label": k, "value": str(v), "confidence": 0.95}
+        entities: List[EntityItem] = [
+            EntityItem(label=k, value=str(v), confidence=0.95)
             for k, v in fields_26as.items()
             if k != "TDSEntries"  # Exclude nested structure from flat entity list
         ]
@@ -357,7 +359,7 @@ async def optimize_tax_endpoint(body: OptimizeTaxRequest):
         result = await optimize_tax(
             validated_data=body.validated_data,
             tax_result=body.tax_result,
-            ocr_text=body.ocr_text,
+            ocr_text=body.ocr_text or "",
         )
         
         log.info("[TaxOptimization] Completed: %d suggestions, ₹%.0f potential savings",
@@ -425,8 +427,13 @@ async def process_pipeline(file: UploadFile = File(...)):
                     file_id=file_id,
                     text="",
                     entities=[],
-                    validation={"status": "failed", "score": 0, "issues": [{"type": "OCR_FAILED", "message": str(exc), "severity": "high", "field": ""}]},
+                    validation=ValidationResponse(
+                        status="failed",
+                        score=0,
+                        issues=[ValidationIssueSchema(type="OCR_FAILED", message=str(exc), severity="high", field="")]
+                    ),
                     tax=None,
+                    optimization=None,
                 )
 
             # ── NER ───────────────────────────────────────────────────────────────
@@ -441,8 +448,8 @@ async def process_pipeline(file: UploadFile = File(...)):
                 ner_elapsed = time.time() - start_time
                 log.warning("[Process] NERService failed after %.3fs (%s) — using regex fallback", ner_elapsed, exc)
                 entity_map = regex_extract_fields(raw_text)
-                entities   = [
-                    {"label": k, "value": str(v), "confidence": 0.9}
+                entities = [
+                    EntityItem(label=k, value=str(v), confidence=0.9)
                     for k, v in entity_map.items()
                 ]
 
@@ -496,10 +503,12 @@ async def process_pipeline(file: UploadFile = File(...)):
                 val_elapsed = time.time() - start_time
                 log.info("[Process] Validation — status=%s score=%s issues=%d, time=%.3fs",
                          val_result_dict.get("status"), val_result_dict.get("score"), len(val_result_dict.get("issues", [])), val_elapsed)
+                # Convert dict to ValidationResponse
+                validation_response: Optional[ValidationResponse] = ValidationResponse(**val_result_dict)
             except Exception as exc:
                 val_elapsed = time.time() - start_time
                 log.error("[Process] Validation stage failed after %.3fs: %s", val_elapsed, exc)
-                val_result_dict = {"status": "error", "score": 0, "issues": []}
+                validation_response = ValidationResponse(status="error", score=0, issues=[])
 
             # ── Tax ───────────────────────────────────────────────────────────────
             start_time = time.time()
@@ -519,7 +528,8 @@ async def process_pipeline(file: UploadFile = File(...)):
             if tds <= 0:
                 missing_fields.append("TDS")
 
-            tax_result = None
+            tax_result: Optional[TaxResponse] = None
+            tax_result_dict: Dict[str, Any] = {}
 
             if missing_fields:
                 log.warning(
@@ -542,17 +552,20 @@ async def process_pipeline(file: UploadFile = File(...)):
                     deductions = 0.0
 
                 try:
-                    tax_result = compute_tax({
+                    tax_result_dict = compute_tax({
                         "GrossSalary": gross,
                         "Deductions":  deductions,
                         "TDS":         tds,
                         "Regime":      regime,
                     })
+                    
+                    # Convert dict to TaxResponse
+                    tax_result = TaxResponse(**tax_result_dict)
 
                     # If the document itself has "TaxOnIncome" extracted, compare
                     doc_tax = _to_float(entity_map.get("TaxOnIncome", 0))
                     if doc_tax > 0:
-                        computed = tax_result.get("base_tax", 0)
+                        computed = tax_result_dict.get("base_tax", 0)
                         diff = abs(computed - doc_tax)
                         if diff > 10:
                             log.warning(
@@ -568,33 +581,37 @@ async def process_pipeline(file: UploadFile = File(...)):
                             )
 
                     log.info("[Process] Tax done — total_tax=%.2f refund=%.2f",
-                             tax_result.get("total_tax", 0), tax_result.get("refund_or_payable", 0))
+                             tax_result_dict.get("total_tax", 0), tax_result_dict.get("refund_or_payable", 0))
                 except Exception as exc:
                     log.error("[Process] Tax computation failed: %s", exc)
                     tax_result = None
+                    tax_result_dict = {}
 
             tax_elapsed = time.time() - start_time
             log.info("[Process] Tax completed in %.3fs", tax_elapsed)
 
             # ── Tax Optimization (Phase 3) ────────────────────────────────────────
             start_time = time.time()
-            optimization_result = None
+            optimization_result: Optional[TaxOptimizationResponse] = None
             
             # Only run optimization if tax computation succeeded
             if tax_result:
                 try:
                     from app.services.tax_optimization_service import optimize_tax
                     
-                    optimization_result = await optimize_tax(
+                    optimization_dict = await optimize_tax(
                         validated_data=entity_map,
-                        tax_result=tax_result,
+                        tax_result=tax_result_dict,  # Pass dict for service layer
                         ocr_text=raw_text,
                     )
                     
+                    # Convert dict to TaxOptimizationResponse
+                    optimization_result = TaxOptimizationResponse(**optimization_dict)
+                    
                     opt_elapsed = time.time() - start_time
                     log.info("[Process] Tax Optimization — %d suggestions, ₹%.0f savings, time=%.3fs",
-                             len(optimization_result.get("suggestions", [])),
-                             optimization_result.get("potential_savings", 0),
+                             len(optimization_dict.get("suggestions", [])),
+                             optimization_dict.get("potential_savings", 0),
                              opt_elapsed)
                     
                 except Exception as exc:
@@ -603,14 +620,22 @@ async def process_pipeline(file: UploadFile = File(...)):
                                opt_elapsed, exc)
                     optimization_result = None
 
+            # Convert AI validation dict to response model if present
+            ai_validation_response: Optional[AIValidationResponse] = None
+            if ai_validation_result:
+                try:
+                    ai_validation_response = AIValidationResponse(**ai_validation_result)
+                except Exception as exc:
+                    log.warning("[Process] Failed to convert AI validation result: %s", exc)
+
             # ── BUILD RESPONSE (NO BLOCKING I/O) ──────────────────────────────────
             response = ProcessResponse(
                 file_id=file_id,
                 text=raw_text,
                 entities=entities,
-                validation=val_result_dict,
+                validation=validation_response,
                 tax=tax_result,
-                ai_validation=ai_validation_result,
+                ai_validation=ai_validation_response,
                 optimization=optimization_result,
             )
 
@@ -645,9 +670,9 @@ async def process_pipeline(file: UploadFile = File(...)):
 @router.post("/persist", tags=["persistence"])
 async def persist_results(
     file_id: str,
-    entity_map: Dict[str, Any] = {},
-    validation_result: Dict[str, Any] = {},
-    tax_result: Dict[str, Any] = None,
+    entity_map: Optional[Dict[str, Any]] = None,
+    validation_result: Optional[Dict[str, Any]] = None,
+    tax_result: Optional[Dict[str, Any]] = None,
 ):
     """
     OPTIONAL background endpoint for deferred persistence.

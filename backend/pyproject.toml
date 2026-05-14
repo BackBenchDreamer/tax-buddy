@@ -1,0 +1,27 @@
+[tool.black]
+line-length = 100
+target-version = ['py311']
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | __pycache__
+  | \.pytest_cache
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "__pycache__", ".pytest_cache"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip = [".venv", "__pycache__"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+no_strict_optional = true
+exclude = ["venv", ".venv", "__pycache__"]

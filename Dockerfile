@@ -76,7 +76,7 @@ ENV DEFAULT_TAX_REGIME="old"
 
 # Groq API (set via docker-compose secrets or -e flag)
 ENV GROQ_API_KEY=""
-ENV GROQ_MODEL="llama3-70b-8192"
+ENV GROQ_MODEL="llama-3.3-70b-versatile"
 ENV GROQ_TIMEOUT="30"
 
 # CORS

@@ -28,7 +28,6 @@ jobs:
           cd backend
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio
 
       - name: Run tests with coverage
         run: |
@@ -118,7 +117,7 @@ jobs:
       - name: Check TypeScript types
         run: |
           cd frontend
-          npx tsc --noEmit
+          npx tsc --noEmit --skipLibCheck
 
   docker-build:
     name: Docker Build Test

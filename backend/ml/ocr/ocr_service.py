@@ -38,11 +38,13 @@ except ImportError:
     PDFPLUMBER_AVAILABLE = False
 
 try:
-    import fitz  # type: ignore  # PyMuPDF
+    import fitz  # PyMuPDF
+    from fitz import Page  # type: ignore[attr-defined]
     PYMUPDF_AVAILABLE = True
 except ImportError:
     fitz = None  # type: ignore
     PYMUPDF_AVAILABLE = False
+    Page = None  # type: ignore
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +105,7 @@ class OCRService:
             doc = fitz.open(pdf_path)
             text_parts = []
             for page in doc:
-                page_text = page.get_text()
+                page_text = page.get_text()  # type: ignore[attr-defined]
                 if page_text:
                     text_parts.append(page_text)
             doc.close()

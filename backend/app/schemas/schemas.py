@@ -168,7 +168,7 @@ class ProcessResponse(BaseModel):
     validation: Optional[ValidationResponse] = None
     tax: Optional[TaxResponse] = None
     ai_validation: Optional[AIValidationResponse] = None
-    optimization: Optional[Dict[str, Any]] = Field(None, description="Tax optimization suggestions (Phase 3)")
+    optimization: Optional["TaxOptimizationResponse"] = Field(None, description="Tax optimization suggestions (Phase 3)")
 
 
 # ---------------------------------------------------------------------------
